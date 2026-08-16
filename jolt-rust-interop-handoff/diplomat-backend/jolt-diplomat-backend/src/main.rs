@@ -13,20 +13,41 @@
 //! x86-64-specific coincidence, not something to generate code that
 //! depends on).
 
-use diplomat_core::hir::{self, ReturnType, SuccessType, Type, TypeDef, PrimitiveType, IntType, StructPathLike};
+use diplomat_core::hir::{self, ReturnType, SuccessType, Type, TypeDef, PrimitiveType, IntType, IntSizeType, StructPathLike};
 use std::fmt::Write as _;
 use std::path::Path;
 
 fn to_kebab(s: &str) -> String {
+    // Treat a run of uppercase letters (optionally followed by a digit) as one
+    // token — e.g. "ICU4X" → "icu4x", not "i-c-u4-x".
+    let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
-    for (i, c) in s.char_indices() {
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
         if c == '_' {
             out.push('-');
-        } else if c.is_uppercase() && i != 0 {
-            out.push('-');
-            out.extend(c.to_lowercase());
+            i += 1;
+        } else if c.is_uppercase() {
+            // Lookahead: collect the full uppercase run (+ optional trailing digit).
+            let run_start = i;
+            while i < chars.len() && chars[i].is_uppercase() { i += 1; }
+            if i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+            let run_len = i - run_start;
+            // Multi-char run followed by more lowercase: last upper belongs to next word.
+            let (acronym_end, next_start) = if run_len > 1 && i < chars.len() && chars[i].is_lowercase() {
+                (i - 1, i - 1)
+            } else {
+                (i, i)
+            };
+            if run_start != 0 { out.push('-'); }
+            for &ac in &chars[run_start..acronym_end] {
+                out.extend(ac.to_lowercase());
+            }
+            i = next_start;
         } else {
             out.extend(c.to_lowercase());
+            i += 1;
         }
     }
     out
@@ -55,8 +76,13 @@ fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
         PrimitiveType::Int(IntType::I16) => (":int", "int16_t"),
         PrimitiveType::Int(IntType::I64) => (":int64", "int64_t"),
         PrimitiveType::Int(IntType::U64) => (":uint64", "uint64_t"),
+        PrimitiveType::Int(IntType::I8) => (":int", "int8_t"),
+        PrimitiveType::IntSize(IntSizeType::Usize) => (":size_t", "size_t"),
+        PrimitiveType::IntSize(IntSizeType::Isize) => (":ssize_t", "ssize_t"),
         PrimitiveType::Float(_) => (":double", "double"),
-        other => panic!("jolt-diplomat-backend: unsupported primitive {other:?} (spike scope only)"),
+        PrimitiveType::Char => (":uint", "char32_t"), // Unicode scalar value — widen to :uint
+        PrimitiveType::Byte => (":uint8", "uint8_t"),
+        other => panic!("jolt-diplomat-backend: unsupported primitive {other:?}"),
     }
 }
 
@@ -74,6 +100,7 @@ fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
         PrimitiveType::Int(IntType::U32) => "U32",
         PrimitiveType::Float(hir::FloatType::F64) => "F64",
         PrimitiveType::Float(hir::FloatType::F32) => "F32",
+        PrimitiveType::Byte => "U8",
         other => panic!("jolt-diplomat-backend: no DiplomatXView mapping for {other:?} (spike scope only)"),
     }
 }
@@ -170,6 +197,11 @@ fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
     // method with "Callback arguments are not supported by this
     // backend" until this was set explicitly).
     s.callbacks = true;
+    // Enable Option<T> and owned-slice lowering so from_syn doesn't hard-fail
+    // on ICU4X types that use them. Our generator skips these per-method
+    // rather than panicking, so the validator must accept them first.
+    s.option = true;
+    s.owned_slices = true;
     s
 }
 
@@ -192,32 +224,30 @@ fn resolve_field_shape<P: hir::TyPosition>(
     tcx: &hir::TypeContext,
     ty: &Type<P>,
     extra_requires: &mut std::collections::BTreeSet<String>,
-) -> FieldShape {
+) -> Result<FieldShape, String> {
     match ty {
         Type::Primitive(p) => {
             let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
-            FieldShape::Prim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string(), is_bool: matches!(p, PrimitiveType::Bool) }
+            Ok(FieldShape::Prim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string(), is_bool: matches!(p, PrimitiveType::Bool) })
         }
         Type::Enum(ep) => {
             let ed = tcx.resolve_enum(ep.tcx_id);
             let enum_alias = to_kebab(ed.name.as_str());
             extra_requires.insert(ed.name.as_str().to_string());
-            FieldShape::EnumField { c_ty: ed.name.as_str().to_string(), enum_alias }
+            Ok(FieldShape::EnumField { c_ty: ed.name.as_str().to_string(), enum_alias })
         }
         Type::Struct(sp) => {
             let sd = match sp.id() {
                 hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
-                other => panic!("jolt-diplomat-backend: expected Struct TypeId, got {other:?}"),
+                other => return Err(format!("expected Struct TypeId, got {other:?}")),
             };
-            let fields = sd.fields.iter()
-                .map(|f| (f.name.as_str().to_string(), resolve_field_shape(tcx, &f.ty, extra_requires)))
-                .collect();
-            FieldShape::Nested { c_struct_name: sd.name.as_str().to_string(), fields }
+            let mut fields = vec![];
+            for f in &sd.fields {
+                fields.push((f.name.as_str().to_string(), resolve_field_shape(tcx, &f.ty, extra_requires)?));
+            }
+            Ok(FieldShape::Nested { c_struct_name: sd.name.as_str().to_string(), fields })
         }
-        other => panic!(
-            "jolt-diplomat-backend: unsupported field/param type {other:?} \
-             (spike scope: flat primitives, enums, and nested structs of those)"
-        ),
+        other => Err(format!("unsupported field/param type {other:?}")),
     }
 }
 
@@ -272,7 +302,7 @@ fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut Stri
 
     let mut extra_requires: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for m in &op.methods {
-        gen_method(tcx, name, m, &mut body, shim_c, &mut extra_requires);
+        let _ = gen_method(tcx, name, m, &mut body, shim_c, &mut extra_requires);
     }
 
     let mut out = String::new();
@@ -294,6 +324,7 @@ fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut Stri
     out
 }
 
+// Returns false if the method was skipped (unsupported shape).
 fn gen_method(
     tcx: &hir::TypeContext,
     owner: &str,
@@ -301,9 +332,20 @@ fn gen_method(
     out: &mut String,
     shim_c: &mut String,
     extra_requires: &mut std::collections::BTreeSet<String>,
-) {
+) -> bool {
     let fn_name = to_kebab(m.name.as_str());
     let has_self = m.param_self.is_some();
+
+    // Skip methods with unsupported param/return shapes rather than panicking.
+    let has_option_param = m.params.iter().any(|p| matches!(p.ty, Type::DiplomatOption(_)));
+    let has_owned_slice = m.params.iter().any(|p| matches!(p.ty, Type::Slice(hir::Slice::Strs(_))));
+    let has_option_return = matches!(&m.output,
+        ReturnType::Infallible(SuccessType::OutType(Type::DiplomatOption(_))) |
+        ReturnType::Nullable(_));
+    if has_option_param || has_owned_slice || has_option_return {
+        eprintln!("skipped {owner}::{} (Option/owned-slice — not yet supported)", m.name);
+        return false;
+    }
 
     // Detect whether ANY crossing in this method needs the shim: a
     // struct-by-value param, a Write success type, or a Fallible return
@@ -332,7 +374,8 @@ fn gen_method(
         }
         for p in &m.params {
             let Type::Primitive(prim) = &p.ty else {
-                panic!("jolt-diplomat-backend: direct-call path hit non-primitive param {} on {owner}::{}", p.name, m.name);
+                eprintln!("skipped {owner}::{} (direct-call path: non-primitive param {})", m.name, p.name);
+                return false;
             };
             let (jolt_ty, _c_ty) = prim_to_jolt_and_c(prim);
             arg_types.push(jolt_ty.to_string());
@@ -344,7 +387,10 @@ fn gen_method(
             ReturnType::Infallible(SuccessType::Unit) => ":void",
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => prim_to_jolt_and_c(p).0,
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(_))) => ":pointer",
-            other => panic!("jolt-diplomat-backend: unsupported direct return {other:?} on {owner}::{}", m.name),
+            other => {
+                eprintln!("skipped {owner}::{} (unsupported direct return {other:?})", m.name);
+                return false;
+            }
         };
         // An opaque return (possibly a DIFFERENT opaque than `owner`,
         // e.g. Thingy::double -> Box<Doubled>) needs the raw pointer
@@ -374,7 +420,7 @@ fn gen_method(
         };
         let _ = writeln!(out, "(defn {fn_name} [{}] {body})", public_names.join(" "));
         let _ = writeln!(out);
-        return;
+        return true;
     }
 
     // Shimmed path — flatten every struct param, always out-pointer the
@@ -450,7 +496,13 @@ fn gen_method(
                 ));
             }
             Type::Struct(_) => {
-                let shape = resolve_field_shape(tcx, &p.ty, extra_requires);
+                let shape = match resolve_field_shape(tcx, &p.ty, extra_requires) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("skipped {owner}::{} (struct param {pname}: {e})", m.name);
+                        return false;
+                    }
+                };
                 let mut leaves = vec![];
                 flatten_leaves(&shape, &pname, &pname, &mut leaves);
                 for (c_ty, flat_c_name, jolt_ty, call_expr) in &leaves {
@@ -544,7 +596,17 @@ fn gen_method(
                     "({struct_name}){{ .data = {pname}_data, .run_callback = {pname}_run_callback, .destructor = {pname}_destructor }}"
                 ));
             }
-            other => panic!("jolt-diplomat-backend: unsupported param type {other:?} on {owner}::{}", m.name),
+            Type::Opaque(op) => {
+                // Borrowed opaque param (e.g. &DataProvider) — const pointer passthrough.
+                let op_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+                c_params.push(format!("const {op_name}* {pname}"));
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})"), public_name: Some(pname.clone()) });
+                call_args.push(pname);
+            }
+            other => {
+                eprintln!("skipped {owner}::{} (unsupported param type {other:?})", m.name);
+                return false;
+            }
         }
     }
     // Public params, built directly from m.params (simpler and more
@@ -574,7 +636,10 @@ fn gen_method(
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
                 Some(prim_to_jolt_and_c(p).1)
             }
-            other => panic!("jolt-diplomat-backend: unsupported shimmed return {other:?} on {owner}::{}", m.name),
+            other => {
+                eprintln!("skipped {owner}::{} (unsupported shimmed return {other:?})", m.name);
+                return false;
+            }
         }
     } else {
         None
@@ -608,12 +673,16 @@ fn gen_method(
                 "uint8_t" => ":uint8",
                 "uint16_t" => ":uint",
                 "int16_t" => ":int",
+                "int8_t" => ":int",
                 "uint32_t" => ":uint",
                 "int32_t" => ":int",
                 "int64_t" => ":int64",
                 "uint64_t" => ":uint64",
+                "size_t" => ":size_t",
+                "ssize_t" => ":ssize_t",
                 "double" => ":double",
                 "bool" => ":int",
+                "char32_t" => ":uint",
                 _ => panic!("jolt-diplomat-backend: no jolt return keyword for C type {c_ty}"),
             }
         }
@@ -676,6 +745,7 @@ fn gen_method(
     }
     let _ = writeln!(out, ")");
     let _ = writeln!(out);
+    true
 }
 
 fn gen_enum_clj(en: &hir::EnumDef) -> String {
