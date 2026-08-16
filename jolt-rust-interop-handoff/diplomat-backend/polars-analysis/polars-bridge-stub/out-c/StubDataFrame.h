@@ -30,7 +30,6 @@ double StubDataFrame_sum(const StubDataFrame* self);
 
 double StubDataFrame_map_reduce_threaded(const StubDataFrame* self, DiplomatCallback_StubDataFrame_map_reduce_threaded_f f_cb_wrap);
 
-
 void StubDataFrame_destroy(StubDataFrame* self);
 
 
