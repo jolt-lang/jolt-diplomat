@@ -1,0 +1,13 @@
+[package]
+name = "jolt-diplomat-backend"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "jolt-diplomat-backend"
+path = "src/main.rs"
+
+[dependencies]
+diplomat_core = { version = ">=0.14,<0.16", features = ["hir"] }
+syn-inline-mod = "0.6"
+syn = { version = "2", features = ["full", "extra-traits"] }

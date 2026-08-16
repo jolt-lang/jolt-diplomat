@@ -1,0 +1,692 @@
+//! Real `diplomat_core`-driven backend: walks the actual HIR (not a guess)
+//! and emits .clj + a C shim, following the rules verified by hand against
+//! Thingy in findings/milestone-1..4. Scope is intentionally limited to the
+//! shapes the spike crate exercises — an unsupported shape panics loudly
+//! rather than silently emitting something wrong.
+//!
+//! Critical rule (milestone-4/5): ANY struct-by-value crossing, param or
+//! return, ALWAYS goes through the shim — never emit a direct defcfn
+//! against a struct-by-value symbol, even where SysV ABI register-packing
+//! would happen to make it work (verified this occurs for sum_with's
+//! DiplomatU8View — 2 fields, <=16 bytes, all-integer-class, so it landed
+//! in the same registers as 2 flattened scalar args — but that's a fragile
+//! x86-64-specific coincidence, not something to generate code that
+//! depends on).
+
+use diplomat_core::hir::{self, ReturnType, SuccessType, Type, TypeDef, PrimitiveType, IntType, StructPathLike};
+use std::fmt::Write as _;
+use std::path::Path;
+
+fn to_kebab(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.char_indices() {
+        if c == '_' {
+            out.push('-');
+        } else if c.is_uppercase() && i != 0 {
+            out.push('-');
+            out.extend(c.to_lowercase());
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Maps a HIR primitive to (jolt.ffi type keyword, C type) — both sides at
+/// once, so they can never drift apart the way milestone-3's hand copy did.
+fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
+    match p {
+        PrimitiveType::Bool => (":int", "bool"), // no :bool keyword exists — verified
+        PrimitiveType::Int(IntType::U8) => (":uint8", "uint8_t"),
+        PrimitiveType::Int(IntType::I32) => (":int", "int32_t"),
+        PrimitiveType::Int(IntType::U32) => (":uint", "uint32_t"),
+        // No 16-bit integer type exists in jolt.ffi at all — confirmed
+        // directly against real jolt v0.7.13 (:uint16/:u16/:short all
+        // fail "unknown foreign type"), not just absent from the docs.
+        // Widen to the native 32-bit type instead: standard C calling
+        // convention (SysV x86-64, and matched by AAPCS64) zero/sign-
+        // extends narrow integer return AND register-passed values into
+        // the full register per the type's signedness, so reading a
+        // uint16_t-returning C function's result as :uint yields the
+        // exact correct value for every representable u16 (all
+        // non-negative, well within 32-bit unsigned range) — this is a
+        // correct widening, not an approximation.
+        PrimitiveType::Int(IntType::U16) => (":uint", "uint16_t"),
+        PrimitiveType::Int(IntType::I16) => (":int", "int16_t"),
+        PrimitiveType::Int(IntType::I64) => (":int64", "int64_t"),
+        PrimitiveType::Int(IntType::U64) => (":uint64", "uint64_t"),
+        PrimitiveType::Float(_) => (":double", "double"),
+        other => panic!("jolt-diplomat-backend: unsupported primitive {other:?} (spike scope only)"),
+    }
+}
+
+/// Diplomat's C runtime macro-generates a DiplomatXView per primitive
+/// type (MAKE_SLICES_AND_OPTIONS in diplomat_runtime.h) — confirmed
+/// directly by regenerating the real header for Thingy::sum_with_i32:
+/// `DiplomatI32View`, not a generic slice type. This maps a primitive to
+/// that suffix so the shim can construct the right view type by name.
+fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
+    match p {
+        PrimitiveType::Bool => "Bool",
+        PrimitiveType::Int(IntType::U8) => "U8",
+        PrimitiveType::Int(IntType::I8) => "I8",
+        PrimitiveType::Int(IntType::I32) => "I32",
+        PrimitiveType::Int(IntType::U32) => "U32",
+        PrimitiveType::Float(hir::FloatType::F64) => "F64",
+        PrimitiveType::Float(hir::FloatType::F32) => "F32",
+        other => panic!("jolt-diplomat-backend: no DiplomatXView mapping for {other:?} (spike scope only)"),
+    }
+}
+
+struct ShimFn {
+    c_src: String,
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let entry = Path::new(&args[1]); // spike-crate/src/lib.rs
+    let out_dir = Path::new(&args[2]);
+    std::fs::create_dir_all(out_dir).unwrap();
+
+    // Exactly diplomat-tool's own entry-point flow, read from its real
+    // source (src/lib.rs) rather than guessed.
+    let module = syn_inline_mod::parse_and_inline_modules(entry);
+    let mut attr_validator = hir::BasicAttributeValidator::new("c");
+    attr_validator.support = diplomat_tool_c_attr_support();
+    let tcx = hir::TypeContext::from_syn(&module, Default::default(), attr_validator).unwrap_or_else(|e| {
+        for (ctx, err) in e {
+            eprintln!("Lowering error in {ctx}: {err}");
+        }
+        std::process::exit(1);
+    });
+
+    let mut shim_c = String::new();
+    writeln!(shim_c, "// GENERATED by jolt-diplomat-backend. Do not hand-edit.").unwrap();
+    writeln!(shim_c, "#include <string.h>").unwrap();
+
+    writeln!(shim_c, "#include \"diplomat_runtime.h\"").unwrap();
+    for (_id, def) in tcx.all_types() {
+        if let TypeDef::Opaque(op) = def {
+            writeln!(shim_c, "#include \"{}.h\"", op.name).unwrap();
+        }
+    }
+    writeln!(shim_c).unwrap();
+    // diplomat_simple_write is common runtime support, not per-type —
+    // needed once per crate whenever ANY method has a Write success type.
+    // Missed on the first generation pass (caught by actually running it:
+    // "no entry for jolt_diplomat_simple_write"), since the hand-written
+    // spike shim included this but the generator's per-opaque-type loop
+    // never emits crate-level boilerplate like this on its own.
+    writeln!(shim_c, "void jolt_diplomat_simple_write(char* buf, size_t buf_size, void* out) {{").unwrap();
+    writeln!(shim_c, "    DiplomatWrite w = diplomat_simple_write(buf, buf_size);").unwrap();
+    writeln!(shim_c, "    memcpy(out, &w, sizeof(w));").unwrap();
+    writeln!(shim_c, "}}").unwrap();
+    writeln!(shim_c).unwrap();
+
+    for (_id, def) in tcx.all_types() {
+        match def {
+            TypeDef::Opaque(op) => {
+                let clj = gen_opaque_clj(&tcx, op, &mut shim_c);
+                let path = out_dir.join(format!("{}.clj", to_kebab(op.name.as_ref())));
+                std::fs::write(&path, clj).unwrap();
+                println!("wrote {}", path.display());
+            }
+            TypeDef::Enum(en) => {
+                let clj = gen_enum_clj(en);
+                let path = out_dir.join(format!("{}.clj", to_kebab(en.name.as_ref())));
+                std::fs::write(&path, clj).unwrap();
+                println!("wrote {}", path.display());
+            }
+            _ => {}
+        }
+    }
+
+    let shim_path = out_dir.join("generated_shim.c");
+    std::fs::write(&shim_path, shim_c).unwrap();
+    println!("wrote {}", shim_path.display());
+}
+
+// diplomat-tool's c::attr_support() controls which #[diplomat::...]
+// attributes are legal for this backend. Minimal permissive set matching
+// what the spike crate actually uses (opaque, out — even though `out` was
+// the wrong attribute for our case, it must still be a *legal* attribute
+// for from_syn's validator to accept the file at all before our own
+// lowering runs; the c backend's own attr_support is the authoritative
+// source but isn't re-exported publicly from diplomat_core, so this is
+// reconstructed to match what the spike crate needs).
+fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
+    let mut s = hir::BackendAttrSupport::default();
+    s.namespacing = false;
+    s.memory_sharing = true;
+    s.non_exhaustive_structs = true;
+    s.method_overloading = true;
+    s.utf8_strings = true;
+    s.utf16_strings = false;
+    s.static_slices = false;
+    // Callbacks are enabled — real diplomat-tool's own `c` backend does
+    // (confirmed: `diplomat-tool c` lowered Thingy::apply_callback
+    // successfully; our hand-reconstructed BackendAttrSupport left this
+    // false by omission, and Diplomat's lowering pass rejected the
+    // method with "Callback arguments are not supported by this
+    // backend" until this was set explicitly).
+    s.callbacks = true;
+    s
+}
+
+/// Flattens a non-opaque struct type into (jolt keyword, C type, field
+/// name) triples — the recursive-decomposition rule from milestone-3.
+/// Panics on anything beyond flat primitive fields; that's out of the
+/// spike's proven scope.
+/// A field's shape, resolved recursively — replaces the earlier
+/// one-level-only flatten_struct_fields. Nested structs (the next
+/// documented gap) turned out to subsume the bool/enum special cases
+/// cleanly once expressed as a tree instead of a flat list: a Prim leaf
+/// IS the base case a Nested field recurses down to.
+enum FieldShape {
+    Prim { jolt_ty: String, c_ty: String, is_bool: bool },
+    EnumField { c_ty: String, enum_alias: String },
+    Nested { c_struct_name: String, fields: Vec<(String, FieldShape)> },
+}
+
+fn resolve_field_shape<P: hir::TyPosition>(
+    tcx: &hir::TypeContext,
+    ty: &Type<P>,
+    extra_requires: &mut std::collections::BTreeSet<String>,
+) -> FieldShape {
+    match ty {
+        Type::Primitive(p) => {
+            let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
+            FieldShape::Prim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string(), is_bool: matches!(p, PrimitiveType::Bool) }
+        }
+        Type::Enum(ep) => {
+            let ed = tcx.resolve_enum(ep.tcx_id);
+            let enum_alias = to_kebab(ed.name.as_str());
+            extra_requires.insert(ed.name.as_str().to_string());
+            FieldShape::EnumField { c_ty: ed.name.as_str().to_string(), enum_alias }
+        }
+        Type::Struct(sp) => {
+            let sd = match sp.id() {
+                hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
+                other => panic!("jolt-diplomat-backend: expected Struct TypeId, got {other:?}"),
+            };
+            let fields = sd.fields.iter()
+                .map(|f| (f.name.as_str().to_string(), resolve_field_shape(tcx, &f.ty, extra_requires)))
+                .collect();
+            FieldShape::Nested { c_struct_name: sd.name.as_str().to_string(), fields }
+        }
+        other => panic!(
+            "jolt-diplomat-backend: unsupported field/param type {other:?} \
+             (spike scope: flat primitives, enums, and nested structs of those)"
+        ),
+    }
+}
+
+/// Walks a FieldShape tree, appending one leaf per scalar/enum field,
+/// each carrying its own flattened C param name and the (possibly
+/// nested) Clojure access expression to read it back out of the
+/// original map — e.g. `(:x (:point opts))` for a field two levels deep.
+fn flatten_leaves(
+    shape: &FieldShape,
+    flat_prefix: &str,
+    clj_access: &str,
+    out: &mut Vec<(String, String, String, String)>, // (c_ty, flat_c_name, jolt_ty, call_expr)
+) {
+    match shape {
+        FieldShape::Prim { jolt_ty, c_ty, is_bool } => {
+            let call_expr = if *is_bool { format!("(if {clj_access} 1 0)") } else { clj_access.to_string() };
+            out.push((c_ty.clone(), flat_prefix.to_string(), jolt_ty.clone(), call_expr));
+        }
+        FieldShape::EnumField { c_ty, enum_alias } => {
+            out.push((c_ty.clone(), flat_prefix.to_string(), ":int".to_string(), format!("({enum_alias}/kw->int {clj_access})")));
+        }
+        FieldShape::Nested { fields, .. } => {
+            for (fname, sub) in fields {
+                let sub_prefix = format!("{flat_prefix}_{fname}");
+                let sub_access = format!("(:{} {clj_access})", to_kebab(fname));
+                flatten_leaves(sub, &sub_prefix, &sub_access, out);
+            }
+        }
+    }
+}
+
+/// Inverse of flatten_leaves: rebuilds the (possibly nested) C struct
+/// literal the shim needs to construct from the flattened scalar params
+/// it actually received.
+fn build_c_literal(shape: &FieldShape, flat_prefix: &str) -> String {
+    match shape {
+        FieldShape::Prim { .. } | FieldShape::EnumField { .. } => flat_prefix.to_string(),
+        FieldShape::Nested { c_struct_name, fields } => {
+            let inits: Vec<String> = fields.iter()
+                .map(|(fname, sub)| format!(".{fname} = {}", build_c_literal(sub, &format!("{flat_prefix}_{fname}"))))
+                .collect();
+            format!("({c_struct_name}){{ {} }}", inits.join(", "))
+        }
+    }
+}
+
+fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut String) -> String {
+    let name = op.name.as_str();
+    let mut body = String::new();
+    let _ = writeln!(body, "(dr/defopaque {} \"{}_destroy\")", name, name);
+    let _ = writeln!(body);
+
+    let mut extra_requires: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for m in &op.methods {
+        gen_method(tcx, name, m, &mut body, shim_c, &mut extra_requires);
+    }
+
+    let mut out = String::new();
+    let _ = writeln!(out, "(ns diplomat.{}", to_kebab(name));
+    let _ = writeln!(out, "  \"GENERATED by jolt-diplomat-backend from the real Diplomat HIR.");
+    let _ = writeln!(out, "  Do not hand-edit — see findings/milestone-5-findings.md.\"");
+    let _ = writeln!(out, "  (:require [jolt.ffi :as ffi]");
+    let _ = writeln!(out, "            [diplomat.runtime :as dr]");
+    // extra_requires collected from enum-valued struct fields encountered
+    // while generating method bodies above — cross-namespace references
+    // (e.g. diplomat.mode/kw->int) need their own require, discovered
+    // during generation rather than assumed up front.
+    for enum_name in &extra_requires {
+        let _ = writeln!(out, "            [diplomat.{} :as {}]", to_kebab(enum_name), to_kebab(enum_name));
+    }
+    let _ = writeln!(out, "  ))");
+    let _ = writeln!(out);
+    out.push_str(&body);
+    out
+}
+
+fn gen_method(
+    tcx: &hir::TypeContext,
+    owner: &str,
+    m: &hir::Method,
+    out: &mut String,
+    shim_c: &mut String,
+    extra_requires: &mut std::collections::BTreeSet<String>,
+) {
+    let fn_name = to_kebab(m.name.as_str());
+    let has_self = m.param_self.is_some();
+
+    // Detect whether ANY crossing in this method needs the shim: a
+    // struct-by-value param, a Write success type, or a Fallible return
+    // (Result's own struct-by-value return always needs it).
+    let needs_shim = m
+        .params
+        .iter()
+        .any(|p| matches!(p.ty, Type::Struct(_) | Type::Slice(_) | Type::Callback(_)))
+        || matches!(m.output, ReturnType::Fallible(_, _))
+        || matches!(m.output, ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _));
+
+    if !needs_shim {
+        // Direct defcfn — safe: every param/return is already a scalar,
+        // opaque pointer, or (per the sum_with finding) a small
+        // all-integer struct we STILL choose to shim for portability
+        // rather than exploit. Since needs_shim already covers Struct
+        // params, reaching here means no Struct params exist, so this
+        // branch is the genuinely safe direct-call case (e.g. `value`).
+        let mut arg_types = vec![];
+        if has_self { arg_types.push(":pointer".to_string()); }
+        let mut public_names = vec![];
+        let mut call_exprs = vec![];
+        if has_self {
+            public_names.push("self".to_string());
+            call_exprs.push("(:ptr self)".to_string()); // extract raw pointer, not the record
+        }
+        for p in &m.params {
+            let Type::Primitive(prim) = &p.ty else {
+                panic!("jolt-diplomat-backend: direct-call path hit non-primitive param {} on {owner}::{}", p.name, m.name);
+            };
+            let (jolt_ty, _c_ty) = prim_to_jolt_and_c(prim);
+            arg_types.push(jolt_ty.to_string());
+            let n = to_kebab(p.name.as_str());
+            public_names.push(n.clone());
+            call_exprs.push(n);
+        }
+        let ret_ty = match &m.output {
+            ReturnType::Infallible(SuccessType::Unit) => ":void",
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => prim_to_jolt_and_c(p).0,
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(_))) => ":pointer",
+            other => panic!("jolt-diplomat-backend: unsupported direct return {other:?} on {owner}::{}", m.name),
+        };
+        // An opaque return (possibly a DIFFERENT opaque than `owner`,
+        // e.g. Thingy::double -> Box<Doubled>) needs the raw pointer
+        // wrapped in that target type's own record constructor, and a
+        // cross-namespace require if it's not the same type as owner —
+        // same require-collection mechanism enum fields already use.
+        let opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
+            let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+            if target_name != owner {
+                extra_requires.insert(target_name.clone());
+            }
+            Some(target_name)
+        } else {
+            None
+        };
+        let c_sym = format!("{owner}_{}", m.name);
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty})",
+            arg_types.join(" "));
+        let call = format!("(c-{fn_name} {})", call_exprs.join(" "));
+        let body = match &opaque_wrap {
+            Some(target) if target != owner => {
+                let alias = to_kebab(target);
+                format!("({alias}/->{target} {call} false)")
+            }
+            Some(target) => format!("(->{target} {call} false)"),
+            None => call,
+        };
+        let _ = writeln!(out, "(defn {fn_name} [{}] {body})", public_names.join(" "));
+        let _ = writeln!(out);
+        return;
+    }
+
+    // Shimmed path — flatten every struct param, always out-pointer the
+    // return if it's Fallible or Write.
+    //
+    // arg_specs tracks, per shim argument in call order: the expression
+    // used when CALLING c-fn (call_expr) and, separately, the name
+    // exposed in the PUBLIC defn's parameter list (None = internal-only,
+    // e.g. an auto-derived length or an internally-allocated out-pointer/
+    // write buffer — never something the caller passes in). Caught in
+    // review: an earlier version conflated these two lists and produced
+    // a defn that exposed `out` and `s-len` as caller parameters while
+    // ALSO passing `out` twice to the shim call — an arity mismatch that
+    // would have failed the moment this ran. Fixed by keeping them
+    // properly separate instead of reusing one list for both purposes.
+    struct ArgSpec {
+        clj_type: String,
+        call_expr: String,
+        public_name: Option<String>,
+    }
+    let shim_sym = format!("jolt_{owner}_{}", m.name);
+    let mut c_params = vec![];
+    let mut arg_specs: Vec<ArgSpec> = vec![];
+    let mut buffer_wraps: Vec<(String, String, String)> = vec![]; // (buf_var, jolt_elem_type, seq_expr)
+    let mut callback_wraps: Vec<String> = vec![]; // fully-formed (let [...] ... prefix, closed generically below
+
+    if has_self {
+        c_params.push(format!("const {owner}* self"));
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into(), public_name: Some("self".into()) });
+    }
+
+    let mut call_args = vec![];
+    if has_self { call_args.push("self".to_string()); }
+
+    for p in &m.params {
+        let pname = to_kebab(p.name.as_str());
+        match &p.ty {
+            Type::Primitive(prim) => {
+                let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+                c_params.push(format!("{c_ty} {pname}"));
+                arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
+                call_args.push(pname);
+            }
+            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::Utf8)) => {
+                // &str -> DiplomatStringView { const char* data; size_t len }.
+                // The caller passes only the string; length is derived via
+                // (count s) at the call site, not exposed as a parameter —
+                // the pre-fix version wrongly made callers pass s-len too.
+                c_params.push(format!("const char* {pname}_data"));
+                c_params.push(format!("size_t {pname}_len"));
+                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                call_args.push(format!(
+                    "(DiplomatStringView){{ .data = {pname}_data, .len = {pname}_len }}"
+                ));
+            }
+            Type::Slice(hir::Slice::Primitive(_, prim)) => {
+                let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+                let view_suffix = prim_to_diplomat_view_suffix(prim);
+                c_params.push(format!("const {c_ty}* {pname}_data"));
+                c_params.push(format!("size_t {pname}_len"));
+                // Public API takes a Clojure seq; the shim wants a raw
+                // pointer + length, so the generated defn marshals the
+                // seq to a temp buffer internally (documented gap in the
+                // hand-written version's nicer API: this generated one is
+                // intentionally lower-level, matching the flattened-struct
+                // treatment elsewhere — correct, not polished).
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-buf"), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                buffer_wraps.push((format!("{pname}-buf"), jolt_ty.to_string(), pname.clone()));
+                call_args.push(format!(
+                    "(Diplomat{view_suffix}View){{ .data = {pname}_data, .len = {pname}_len }}"
+                ));
+            }
+            Type::Struct(_) => {
+                let shape = resolve_field_shape(tcx, &p.ty, extra_requires);
+                let mut leaves = vec![];
+                flatten_leaves(&shape, &pname, &pname, &mut leaves);
+                for (c_ty, flat_c_name, jolt_ty, call_expr) in &leaves {
+                    c_params.push(format!("{c_ty} {flat_c_name}"));
+                    arg_specs.push(ArgSpec {
+                        clj_type: jolt_ty.clone(),
+                        call_expr: call_expr.clone(),
+                        public_name: None,
+                    });
+                }
+                let _ = writeln!(shim_c, "// (constructed inline below, possibly nested)");
+                call_args.push(build_c_literal(&shape, &pname));
+            }
+            Type::Callback(cb) => {
+                // Real ABI (confirmed against the actual generated header
+                // for Thingy::apply_callback, not assumed):
+                //   struct DiplomatCallback_{owner}_{method}_f {
+                //     const void* data;
+                //     {ret} (*run_callback)(const void*, {params...});
+                //     void (*destructor)(const void*);
+                //   };
+                // passed BY VALUE — same struct-by-value rule as
+                // everywhere else, decomposed to 3 scalars in the shim.
+                // The Jolt-side wiring (self-freeing trampoline pair via
+                // an atom) is exactly the pattern verified end-to-end in
+                // milestone-6-callbacks-findings.md — generated here
+                // verbatim rather than factored into a shared runtime
+                // helper, since the self-referential destructor
+                // construction was only proven in this inline shape.
+                let mut cb_c_params = vec!["const void*".to_string()];
+                let mut cb_jolt_param_types = vec![];
+                let mut cb_param_names = vec![];
+                for (i, cp) in cb.params.iter().enumerate() {
+                    let Type::Primitive(prim) = &cp.ty else {
+                        panic!(
+                            "jolt-diplomat-backend: callback param type {:?} unsupported \
+                             (spike scope: primitives only) on {owner}::{}", cp.ty, m.name
+                        );
+                    };
+                    let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+                    cb_c_params.push(c_ty.to_string());
+                    cb_jolt_param_types.push(jolt_ty.to_string());
+                    cb_param_names.push(format!("a{i}"));
+                }
+                let (cb_ret_c, cb_ret_jolt) = match cb.output.as_ref() {
+                    ReturnType::Infallible(SuccessType::Unit) => ("void".to_string(), ":void".to_string()),
+                    ReturnType::Infallible(SuccessType::OutType(Type::Primitive(p))) => {
+                        let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
+                        (c_ty.to_string(), jolt_ty.to_string())
+                    }
+                    other => panic!(
+                        "jolt-diplomat-backend: callback return type {other:?} unsupported \
+                         (spike scope: primitives or void only) on {owner}::{}", m.name
+                    ),
+                };
+
+                let struct_name = format!("DiplomatCallback_{owner}_{}_f", m.name);
+                c_params.push(format!("const void* {pname}_data"));
+                c_params.push(format!("{cb_ret_c} (*{pname}_run_callback)({})", cb_c_params.join(", ")));
+                c_params.push(format!("void (*{pname}_destructor)(const void*)"));
+
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "ffi/null".into(), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-run-cb"), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-destructor"), public_name: None });
+
+                let cb_fn_params = format!("_data {}", cb_param_names.join(" "));
+                let cb_fn_call = format!("({pname} {})", cb_param_names.join(" "));
+                let cb_ffi_types = std::iter::once(":pointer".to_string())
+                    .chain(cb_jolt_param_types.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                callback_wraps.push(format!(
+                    "(let [{pname}-state (atom nil)\n\
+                     {indent}      {pname}-run-cb (ffi/foreign-callable\n\
+                     {indent}                    (fn [{cb_fn_params}] {cb_fn_call})\n\
+                     {indent}                    [{cb_ffi_types}] {cb_ret_jolt} :collect-safe)\n\
+                     {indent}      {pname}-destructor (ffi/foreign-callable\n\
+                     {indent}                        (fn [_data]\n\
+                     {indent}                          (let [{{:keys [run-cb destructor]}} @{pname}-state]\n\
+                     {indent}                            (ffi/free-callable run-cb)\n\
+                     {indent}                            (ffi/free-callable destructor)))\n\
+                     {indent}                        [:pointer] :void :collect-safe)]\n\
+                     {indent}  (reset! {pname}-state {{:run-cb {pname}-run-cb :destructor {pname}-destructor}})",
+                    pname = pname, indent = "", cb_fn_params = cb_fn_params, cb_fn_call = cb_fn_call,
+                    cb_ffi_types = cb_ffi_types, cb_ret_jolt = cb_ret_jolt
+                ));
+
+                let _ = writeln!(shim_c, "// (DiplomatCallback constructed inline below)");
+                call_args.push(format!(
+                    "({struct_name}){{ .data = {pname}_data, .run_callback = {pname}_run_callback, .destructor = {pname}_destructor }}"
+                ));
+            }
+            other => panic!("jolt-diplomat-backend: unsupported param type {other:?} on {owner}::{}", m.name),
+        }
+    }
+    // Public params, built directly from m.params (simpler and more
+    // correct than deriving from arg_specs, since a struct param collapses
+    // to ONE public map parameter regardless of how many fields it has).
+    let mut public_params = vec![];
+    if has_self { public_params.push("self".to_string()); }
+    for p in &m.params {
+        let pname = to_kebab(p.name.as_str());
+        match &p.ty {
+            Type::Slice(hir::Slice::Primitive(..)) => public_params.push(pname), // seq, marshaled internally
+            _ => public_params.push(pname),
+        }
+    }
+    let is_write = matches!(m.output, ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _));
+    if is_write {
+        c_params.push("DiplomatWrite* write".to_string());
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "w".into(), public_name: None });
+        call_args.push("write".to_string());
+    }
+
+    let out_ptr_needed = matches!(m.output, ReturnType::Fallible(_, _));
+
+    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write {
+        match &m.output {
+            ReturnType::Infallible(SuccessType::Unit) => Some("void"),
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
+                Some(prim_to_jolt_and_c(p).1)
+            }
+            other => panic!("jolt-diplomat-backend: unsupported shimmed return {other:?} on {owner}::{}", m.name),
+        }
+    } else {
+        None
+    };
+
+    if out_ptr_needed {
+        c_params.push("void* out".to_string());
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
+    }
+
+    let real_call = format!("{owner}_{}({})", m.name, call_args.join(", "));
+    let shim_c_ret = plain_return.unwrap_or("void");
+    let _ = writeln!(shim_c, "{shim_c_ret} {shim_sym}({}) {{", c_params.join(", "));
+    if out_ptr_needed {
+        let result_ty = format!("{owner}_{}_result", m.name);
+        let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
+        let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
+    } else if plain_return == Some("void") {
+        let _ = writeln!(shim_c, "    {real_call};");
+    } else {
+        let _ = writeln!(shim_c, "    return {real_call};");
+    }
+    let _ = writeln!(shim_c, "}}");
+    let _ = writeln!(shim_c);
+
+    let clj_ret_ty = match plain_return {
+        Some("void") | None => ":void",
+        Some(c_ty) => {
+            // reverse-map C type back to jolt keyword for the defcfn return
+            match c_ty {
+                "uint8_t" => ":uint8",
+                "uint16_t" => ":uint",
+                "int16_t" => ":int",
+                "uint32_t" => ":uint",
+                "int32_t" => ":int",
+                "int64_t" => ":int64",
+                "uint64_t" => ":uint64",
+                "double" => ":double",
+                "bool" => ":int",
+                _ => panic!("jolt-diplomat-backend: no jolt return keyword for C type {c_ty}"),
+            }
+        }
+    };
+
+    let shim_arg_types: Vec<String> = arg_specs.iter().map(|a| a.clj_type.clone()).collect();
+    let shim_call_exprs: Vec<String> = arg_specs.iter().map(|a| a.call_expr.clone()).collect();
+
+    let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
+        shim_arg_types.join(" "));
+
+    let mut body_lines: Vec<String> = vec![];
+
+    if out_ptr_needed {
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{fn_name}-result \"jolt_sizeof_{owner}_{}_result\" [] :int)", m.name);
+        let _ = writeln!(shim_c, "size_t jolt_sizeof_{owner}_{}_result(void) {{ return sizeof({owner}_{}_result); }}", m.name, m.name);
+        body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
+        body_lines.push("  (try".to_string());
+        body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
+        body_lines.push("    (dr/unwrap-result!".to_string());
+        body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
+        body_lines.push(format!("       {{:ok? true :value (->{owner} (ffi/read out :pointer 0) false)}}"));
+        body_lines.push("       {:ok? false :error (ffi/read out :int 0)})".to_string());
+        body_lines.push(format!("     \"{owner}/{fn_name}\")"));
+        body_lines.push("    (finally (ffi/free out))))".to_string());
+    } else if is_write {
+        body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
+        body_lines.push("  (try".to_string());
+        body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
+        body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
+        body_lines.push("    (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))".to_string());
+        body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
+    } else {
+        body_lines.push(format!("(c-{fn_name} {})", shim_call_exprs.join(" ")));
+    }
+
+    let mut indent = String::new();
+    let mut prefix_lines: Vec<String> = vec![];
+    let mut suffix_close = String::new();
+    for cb_wrap in &callback_wraps {
+        prefix_lines.push(cb_wrap.clone());
+        indent.push_str("  ");
+        suffix_close.push(')');
+    }
+    for (buf_var, elem_type, seq_expr) in &buffer_wraps {
+        prefix_lines.push(format!("{indent}(dr/with-primitive-buffer [{buf_var} {elem_type} {seq_expr}]"));
+        indent.push_str("  ");
+        suffix_close.push(')');
+    }
+
+    let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
+    for line in &prefix_lines {
+        let _ = writeln!(out, "  {line}");
+    }
+    for line in &body_lines {
+        let _ = writeln!(out, "  {indent}{line}");
+    }
+    if !suffix_close.is_empty() {
+        let _ = writeln!(out, "  {suffix_close}");
+    }
+    let _ = writeln!(out, ")");
+    let _ = writeln!(out);
+}
+
+fn gen_enum_clj(en: &hir::EnumDef) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "(ns diplomat.{}", to_kebab(en.name.as_ref()));
+    let _ = writeln!(out, "  \"GENERATED by jolt-diplomat-backend.\")");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "(def kw->int {{");
+    for v in &en.variants {
+        let _ = writeln!(out, "  :{} {}", to_kebab(v.name.as_ref()), v.discriminant);
+    }
+    let _ = writeln!(out, "  }})");
+    out
+}
