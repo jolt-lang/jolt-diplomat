@@ -6,3 +6,5 @@
   :verbose 1
   :debug 2
   })
+
+(def int->kw (clojure.set/map-invert kw->int))

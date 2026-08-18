@@ -29,12 +29,10 @@ fn to_kebab(s: &str) -> String {
             out.push('-');
             i += 1;
         } else if c.is_uppercase() {
-            // Lookahead: collect the full uppercase run (+ optional trailing digit).
             let run_start = i;
             while i < chars.len() && chars[i].is_uppercase() { i += 1; }
             if i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
             let run_len = i - run_start;
-            // Multi-char run followed by more lowercase: last upper belongs to next word.
             let (acronym_end, next_start) = if run_len > 1 && i < chars.len() && chars[i].is_lowercase() {
                 (i - 1, i - 1)
             } else {
@@ -53,70 +51,53 @@ fn to_kebab(s: &str) -> String {
     out
 }
 
-/// Maps a HIR primitive to (jolt.ffi type keyword, C type) — both sides at
-/// once, so they can never drift apart the way milestone-3's hand copy did.
 fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
     match p {
-        PrimitiveType::Bool => (":int", "bool"), // no :bool keyword exists — verified
+        PrimitiveType::Bool => (":int", "bool"), // no :bool keyword — verified
         PrimitiveType::Int(IntType::U8) => (":uint8", "uint8_t"),
+        PrimitiveType::Int(IntType::I8) => (":int", "int8_t"),
         PrimitiveType::Int(IntType::I32) => (":int", "int32_t"),
         PrimitiveType::Int(IntType::U32) => (":uint", "uint32_t"),
-        // No 16-bit integer type exists in jolt.ffi at all — confirmed
-        // directly against real jolt v0.7.13 (:uint16/:u16/:short all
-        // fail "unknown foreign type"), not just absent from the docs.
-        // Widen to the native 32-bit type instead: standard C calling
-        // convention (SysV x86-64, and matched by AAPCS64) zero/sign-
-        // extends narrow integer return AND register-passed values into
-        // the full register per the type's signedness, so reading a
-        // uint16_t-returning C function's result as :uint yields the
-        // exact correct value for every representable u16 (all
-        // non-negative, well within 32-bit unsigned range) — this is a
-        // correct widening, not an approximation.
+        // No 16-bit keyword in jolt.ffi — widen to 32-bit (ABI zero/sign-extends).
         PrimitiveType::Int(IntType::U16) => (":uint", "uint16_t"),
         PrimitiveType::Int(IntType::I16) => (":int", "int16_t"),
         PrimitiveType::Int(IntType::I64) => (":int64", "int64_t"),
         PrimitiveType::Int(IntType::U64) => (":uint64", "uint64_t"),
-        PrimitiveType::Int(IntType::I8) => (":int", "int8_t"),
         PrimitiveType::IntSize(IntSizeType::Usize) => (":size_t", "size_t"),
         PrimitiveType::IntSize(IntSizeType::Isize) => (":ssize_t", "ssize_t"),
         PrimitiveType::Float(_) => (":double", "double"),
-        PrimitiveType::Char => (":uint", "char32_t"), // Unicode scalar value — widen to :uint
+        PrimitiveType::Char => (":uint", "char32_t"),
         PrimitiveType::Byte => (":uint8", "uint8_t"),
         other => panic!("jolt-diplomat-backend: unsupported primitive {other:?}"),
     }
 }
 
-/// Diplomat's C runtime macro-generates a DiplomatXView per primitive
-/// type (MAKE_SLICES_AND_OPTIONS in diplomat_runtime.h) — confirmed
-/// directly by regenerating the real header for Thingy::sum_with_i32:
-/// `DiplomatI32View`, not a generic slice type. This maps a primitive to
-/// that suffix so the shim can construct the right view type by name.
 fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
     match p {
         PrimitiveType::Bool => "Bool",
-        PrimitiveType::Int(IntType::U8) => "U8",
+        PrimitiveType::Int(IntType::U8) | PrimitiveType::Byte => "U8",
         PrimitiveType::Int(IntType::I8) => "I8",
+        PrimitiveType::Int(IntType::I16) => "I16",
+        PrimitiveType::Int(IntType::U16) => "U16",
         PrimitiveType::Int(IntType::I32) => "I32",
         PrimitiveType::Int(IntType::U32) => "U32",
+        PrimitiveType::Int(IntType::I64) => "I64",
+        PrimitiveType::Int(IntType::U64) => "U64",
+        PrimitiveType::IntSize(IntSizeType::Usize) => "Usize",
+        PrimitiveType::IntSize(IntSizeType::Isize) => "Isize",
         PrimitiveType::Float(hir::FloatType::F64) => "F64",
         PrimitiveType::Float(hir::FloatType::F32) => "F32",
-        PrimitiveType::Byte => "U8",
-        other => panic!("jolt-diplomat-backend: no DiplomatXView mapping for {other:?} (spike scope only)"),
+        PrimitiveType::Char => "Char",
+        other => panic!("jolt-diplomat-backend: no DiplomatXView mapping for {other:?}"),
     }
-}
-
-struct ShimFn {
-    c_src: String,
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let entry = Path::new(&args[1]); // spike-crate/src/lib.rs
+    let entry = Path::new(&args[1]);
     let out_dir = Path::new(&args[2]);
     std::fs::create_dir_all(out_dir).unwrap();
 
-    // Exactly diplomat-tool's own entry-point flow, read from its real
-    // source (src/lib.rs) rather than guessed.
     let module = syn_inline_mod::parse_and_inline_modules(entry);
     let mut attr_validator = hir::BasicAttributeValidator::new("c");
     attr_validator.support = diplomat_tool_c_attr_support();
@@ -130,7 +111,6 @@ fn main() {
     let mut shim_c = String::new();
     writeln!(shim_c, "// GENERATED by jolt-diplomat-backend. Do not hand-edit.").unwrap();
     writeln!(shim_c, "#include <string.h>").unwrap();
-
     writeln!(shim_c, "#include \"diplomat_runtime.h\"").unwrap();
     for (_id, def) in tcx.all_types() {
         if let TypeDef::Opaque(op) = def {
@@ -138,12 +118,6 @@ fn main() {
         }
     }
     writeln!(shim_c).unwrap();
-    // diplomat_simple_write is common runtime support, not per-type —
-    // needed once per crate whenever ANY method has a Write success type.
-    // Missed on the first generation pass (caught by actually running it:
-    // "no entry for jolt_diplomat_simple_write"), since the hand-written
-    // spike shim included this but the generator's per-opaque-type loop
-    // never emits crate-level boilerplate like this on its own.
     writeln!(shim_c, "void jolt_diplomat_simple_write(char* buf, size_t buf_size, void* out) {{").unwrap();
     writeln!(shim_c, "    DiplomatWrite w = diplomat_simple_write(buf, buf_size);").unwrap();
     writeln!(shim_c, "    memcpy(out, &w, sizeof(w));").unwrap();
@@ -173,14 +147,6 @@ fn main() {
     println!("wrote {}", shim_path.display());
 }
 
-// diplomat-tool's c::attr_support() controls which #[diplomat::...]
-// attributes are legal for this backend. Minimal permissive set matching
-// what the spike crate actually uses (opaque, out — even though `out` was
-// the wrong attribute for our case, it must still be a *legal* attribute
-// for from_syn's validator to accept the file at all before our own
-// lowering runs; the c backend's own attr_support is the authoritative
-// source but isn't re-exported publicly from diplomat_core, so this is
-// reconstructed to match what the spike crate needs).
 fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
     let mut s = hir::BackendAttrSupport::default();
     s.namespacing = false;
@@ -188,35 +154,24 @@ fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
     s.non_exhaustive_structs = true;
     s.method_overloading = true;
     s.utf8_strings = true;
-    s.utf16_strings = false;
+    s.utf16_strings = true;
     s.static_slices = false;
-    // Callbacks are enabled — real diplomat-tool's own `c` backend does
-    // (confirmed: `diplomat-tool c` lowered Thingy::apply_callback
-    // successfully; our hand-reconstructed BackendAttrSupport left this
-    // false by omission, and Diplomat's lowering pass rejected the
-    // method with "Callback arguments are not supported by this
-    // backend" until this was set explicitly).
     s.callbacks = true;
-    // Enable Option<T> and owned-slice lowering so from_syn doesn't hard-fail
-    // on ICU4X types that use them. Our generator skips these per-method
-    // rather than panicking, so the validator must accept them first.
     s.option = true;
     s.owned_slices = true;
     s
 }
 
-/// Flattens a non-opaque struct type into (jolt keyword, C type, field
-/// name) triples — the recursive-decomposition rule from milestone-3.
-/// Panics on anything beyond flat primitive fields; that's out of the
-/// spike's proven scope.
-/// A field's shape, resolved recursively — replaces the earlier
-/// one-level-only flatten_struct_fields. Nested structs (the next
-/// documented gap) turned out to subsume the bool/enum special cases
-/// cleanly once expressed as a tree instead of a flat list: a Prim leaf
-/// IS the base case a Nested field recurses down to.
+// A struct field's shape — either a primitive leaf, an enum leaf,
+// an Option<primitive/enum> leaf, or a nested struct.
 enum FieldShape {
     Prim { jolt_ty: String, c_ty: String, is_bool: bool },
     EnumField { c_ty: String, enum_alias: String },
+    // DiplomatOption<T>: C ABI is { T value; bool is_some } by value.
+    // We emit two shim params: the inner value and a bool sentinel.
+    // Jolt caller passes nil (→ is_some=0) or the value (→ is_some=1).
+    OptionPrim { jolt_ty: String, c_ty: String },
+    OptionEnum { c_ty: String, enum_alias: String },
     Nested { c_struct_name: String, fields: Vec<(String, FieldShape)> },
 }
 
@@ -236,6 +191,19 @@ fn resolve_field_shape<P: hir::TyPosition>(
             extra_requires.insert(ed.name.as_str().to_string());
             Ok(FieldShape::EnumField { c_ty: ed.name.as_str().to_string(), enum_alias })
         }
+        Type::DiplomatOption(inner) => match inner.as_ref() {
+            Type::Primitive(p) => {
+                let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
+                Ok(FieldShape::OptionPrim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string() })
+            }
+            Type::Enum(ep) => {
+                let ed = tcx.resolve_enum(ep.tcx_id);
+                let enum_alias = to_kebab(ed.name.as_str());
+                extra_requires.insert(ed.name.as_str().to_string());
+                Ok(FieldShape::OptionEnum { c_ty: ed.name.as_str().to_string(), enum_alias })
+            }
+            other => Err(format!("Option<{other:?}> struct field — only Option<prim/enum> supported")),
+        },
         Type::Struct(sp) => {
             let sd = match sp.id() {
                 hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
@@ -251,10 +219,6 @@ fn resolve_field_shape<P: hir::TyPosition>(
     }
 }
 
-/// Walks a FieldShape tree, appending one leaf per scalar/enum field,
-/// each carrying its own flattened C param name and the (possibly
-/// nested) Clojure access expression to read it back out of the
-/// original map — e.g. `(:x (:point opts))` for a field two levels deep.
 fn flatten_leaves(
     shape: &FieldShape,
     flat_prefix: &str,
@@ -267,7 +231,21 @@ fn flatten_leaves(
             out.push((c_ty.clone(), flat_prefix.to_string(), jolt_ty.clone(), call_expr));
         }
         FieldShape::EnumField { c_ty, enum_alias } => {
-            out.push((c_ty.clone(), flat_prefix.to_string(), ":int".to_string(), format!("({enum_alias}/kw->int {clj_access})")));
+            out.push((c_ty.clone(), flat_prefix.to_string(), ":int".to_string(),
+                format!("({enum_alias}/kw->int {clj_access})")));
+        }
+        FieldShape::OptionPrim { jolt_ty, c_ty } => {
+            // Emit value + is_some sentinel. Caller passes nil or the value.
+            out.push((c_ty.clone(), flat_prefix.to_string(), jolt_ty.clone(),
+                format!("(or {clj_access} 0)")));
+            out.push(("bool".to_string(), format!("{flat_prefix}_is_some"), ":int".to_string(),
+                format!("(if (nil? {clj_access}) 0 1)")));
+        }
+        FieldShape::OptionEnum { c_ty, enum_alias } => {
+            out.push((c_ty.clone(), flat_prefix.to_string(), ":int".to_string(),
+                format!("(if {clj_access} ({enum_alias}/kw->int {clj_access}) 0)")));
+            out.push(("bool".to_string(), format!("{flat_prefix}_is_some"), ":int".to_string(),
+                format!("(if (nil? {clj_access}) 0 1)")));
         }
         FieldShape::Nested { fields, .. } => {
             for (fname, sub) in fields {
@@ -279,12 +257,16 @@ fn flatten_leaves(
     }
 }
 
-/// Inverse of flatten_leaves: rebuilds the (possibly nested) C struct
-/// literal the shim needs to construct from the flattened scalar params
-/// it actually received.
 fn build_c_literal(shape: &FieldShape, flat_prefix: &str) -> String {
     match shape {
         FieldShape::Prim { .. } | FieldShape::EnumField { .. } => flat_prefix.to_string(),
+        FieldShape::OptionPrim { c_ty, .. } => {
+            // DiplomatOption<T> = { T value; bool is_some }
+            format!("(DiplomatOption_{c_ty}){{ .value = {flat_prefix}, .is_some = {flat_prefix}_is_some }}")
+        }
+        FieldShape::OptionEnum { c_ty, .. } => {
+            format!("(DiplomatOption_{c_ty}){{ .value = {flat_prefix}, .is_some = {flat_prefix}_is_some }}")
+        }
         FieldShape::Nested { c_struct_name, fields } => {
             let inits: Vec<String> = fields.iter()
                 .map(|(fname, sub)| format!(".{fname} = {}", build_c_literal(sub, &format!("{flat_prefix}_{fname}"))))
@@ -311,10 +293,6 @@ fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut Stri
     let _ = writeln!(out, "  Do not hand-edit — see findings/milestone-5-findings.md.\"");
     let _ = writeln!(out, "  (:require [jolt.ffi :as ffi]");
     let _ = writeln!(out, "            [diplomat.runtime :as dr]");
-    // extra_requires collected from enum-valued struct fields encountered
-    // while generating method bodies above — cross-namespace references
-    // (e.g. diplomat.mode/kw->int) need their own require, discovered
-    // during generation rather than assumed up front.
     for enum_name in &extra_requires {
         let _ = writeln!(out, "            [diplomat.{} :as {}]", to_kebab(enum_name), to_kebab(enum_name));
     }
@@ -336,45 +314,39 @@ fn gen_method(
     let fn_name = to_kebab(m.name.as_str());
     let has_self = m.param_self.is_some();
 
-    // Skip methods with unsupported param/return shapes rather than panicking.
-    let has_option_param = m.params.iter().any(|p| matches!(p.ty, Type::DiplomatOption(_)));
+    // Only skip owned-slice params (Strs) — Option<T> is now handled below.
     let has_owned_slice = m.params.iter().any(|p| matches!(p.ty, Type::Slice(hir::Slice::Strs(_))));
-    let has_option_return = matches!(&m.output,
-        ReturnType::Infallible(SuccessType::OutType(Type::DiplomatOption(_))) |
-        ReturnType::Nullable(_));
-    if has_option_param || has_owned_slice || has_option_return {
-        eprintln!("skipped {owner}::{} (Option/owned-slice — not yet supported)", m.name);
+    if has_owned_slice {
+        eprintln!("skipped {owner}::{} (owned-slice param — not supported)", m.name);
         return false;
     }
 
-    // Detect whether ANY crossing in this method needs the shim: a
-    // struct-by-value param, a Write success type, or a Fallible return
-    // (Result's own struct-by-value return always needs it).
-    let needs_shim = m
-        .params
-        .iter()
-        .any(|p| matches!(p.ty, Type::Struct(_) | Type::Slice(_) | Type::Callback(_)))
+    // Detect whether ANY crossing needs the shim.
+    let needs_shim = m.params.iter().any(|p| matches!(
+        p.ty,
+        Type::Struct(_) | Type::Slice(_) | Type::Callback(_) | Type::Enum(_) |
+        Type::Opaque(_) | Type::DiplomatOption(_)
+    ))
         || matches!(m.output, ReturnType::Fallible(_, _))
-        || matches!(m.output, ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _));
+        || matches!(m.output,
+            ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _) |
+            ReturnType::Nullable(_) |
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(_))) |
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_))));
 
     if !needs_shim {
-        // Direct defcfn — safe: every param/return is already a scalar,
-        // opaque pointer, or (per the sum_with finding) a small
-        // all-integer struct we STILL choose to shim for portability
-        // rather than exploit. Since needs_shim already covers Struct
-        // params, reaching here means no Struct params exist, so this
-        // branch is the genuinely safe direct-call case (e.g. `value`).
+        // Direct defcfn — only primitives in params and a simple return.
         let mut arg_types = vec![];
         if has_self { arg_types.push(":pointer".to_string()); }
         let mut public_names = vec![];
         let mut call_exprs = vec![];
         if has_self {
             public_names.push("self".to_string());
-            call_exprs.push("(:ptr self)".to_string()); // extract raw pointer, not the record
+            call_exprs.push("(:ptr self)".to_string());
         }
         for p in &m.params {
             let Type::Primitive(prim) = &p.ty else {
-                eprintln!("skipped {owner}::{} (direct-call path: non-primitive param {})", m.name, p.name);
+                eprintln!("skipped {owner}::{} (direct-call: non-primitive param {})", m.name, p.name);
                 return false;
             };
             let (jolt_ty, _c_ty) = prim_to_jolt_and_c(prim);
@@ -392,20 +364,11 @@ fn gen_method(
                 return false;
             }
         };
-        // An opaque return (possibly a DIFFERENT opaque than `owner`,
-        // e.g. Thingy::double -> Box<Doubled>) needs the raw pointer
-        // wrapped in that target type's own record constructor, and a
-        // cross-namespace require if it's not the same type as owner —
-        // same require-collection mechanism enum fields already use.
         let opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
             let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-            if target_name != owner {
-                extra_requires.insert(target_name.clone());
-            }
+            if target_name != owner { extra_requires.insert(target_name.clone()); }
             Some(target_name)
-        } else {
-            None
-        };
+        } else { None };
         let c_sym = format!("{owner}_{}", m.name);
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty})",
             arg_types.join(" "));
@@ -423,19 +386,7 @@ fn gen_method(
         return true;
     }
 
-    // Shimmed path — flatten every struct param, always out-pointer the
-    // return if it's Fallible or Write.
-    //
-    // arg_specs tracks, per shim argument in call order: the expression
-    // used when CALLING c-fn (call_expr) and, separately, the name
-    // exposed in the PUBLIC defn's parameter list (None = internal-only,
-    // e.g. an auto-derived length or an internally-allocated out-pointer/
-    // write buffer — never something the caller passes in). Caught in
-    // review: an earlier version conflated these two lists and produced
-    // a defn that exposed `out` and `s-len` as caller parameters while
-    // ALSO passing `out` twice to the shim call — an arity mismatch that
-    // would have failed the moment this ran. Fixed by keeping them
-    // properly separate instead of reusing one list for both purposes.
+    // Shimmed path.
     struct ArgSpec {
         clj_type: String,
         call_expr: String,
@@ -444,8 +395,8 @@ fn gen_method(
     let shim_sym = format!("jolt_{owner}_{}", m.name);
     let mut c_params = vec![];
     let mut arg_specs: Vec<ArgSpec> = vec![];
-    let mut buffer_wraps: Vec<(String, String, String)> = vec![]; // (buf_var, jolt_elem_type, seq_expr)
-    let mut callback_wraps: Vec<String> = vec![]; // fully-formed (let [...] ... prefix, closed generically below
+    let mut buffer_wraps: Vec<(String, String, String)> = vec![];
+    let mut callback_wraps: Vec<String> = vec![];
 
     if has_self {
         c_params.push(format!("const {owner}* self"));
@@ -464,36 +415,51 @@ fn gen_method(
                 arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
                 call_args.push(pname);
             }
+            Type::Enum(ep) => {
+                let ed = tcx.resolve_enum(ep.tcx_id);
+                let enum_name = ed.name.as_str().to_string();
+                let enum_alias = to_kebab(&enum_name);
+                extra_requires.insert(enum_name.clone());
+                c_params.push(format!("{enum_name} {pname}"));
+                arg_specs.push(ArgSpec {
+                    clj_type: ":int".into(),
+                    call_expr: format!("({enum_alias}/kw->int {pname})"),
+                    public_name: Some(pname.clone()),
+                });
+                call_args.push(pname);
+            }
             Type::Slice(hir::Slice::Str(_, hir::StringEncoding::Utf8)) => {
-                // &str -> DiplomatStringView { const char* data; size_t len }.
-                // The caller passes only the string; length is derived via
-                // (count s) at the call site, not exposed as a parameter —
-                // the pre-fix version wrongly made callers pass s-len too.
                 c_params.push(format!("const char* {pname}_data"));
                 c_params.push(format!("size_t {pname}_len"));
                 arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
                 arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
-                call_args.push(format!(
-                    "(DiplomatStringView){{ .data = {pname}_data, .len = {pname}_len }}"
-                ));
+                call_args.push(format!("(DiplomatStringView){{ .data = {pname}_data, .len = {pname}_len }}"));
+            }
+            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::UnvalidatedUtf8)) => {
+                // DiplomatStrView — same {data, len} shape as DiplomatStringView but for DiplomatStr.
+                c_params.push(format!("const char* {pname}_data"));
+                c_params.push(format!("size_t {pname}_len"));
+                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                call_args.push(format!("(DiplomatStrView){{ .data = {pname}_data, .len = {pname}_len }}"));
+            }
+            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::UnvalidatedUtf16)) => {
+                // DiplomatStr16View — {char16_t* data, size_t len}. Caller passes raw pointer.
+                c_params.push(format!("const char16_t* {pname}_data"));
+                c_params.push(format!("size_t {pname}_len"));
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                call_args.push(format!("(DiplomatStr16View){{ .data = {pname}_data, .len = {pname}_len }}"));
             }
             Type::Slice(hir::Slice::Primitive(_, prim)) => {
                 let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
                 let view_suffix = prim_to_diplomat_view_suffix(prim);
                 c_params.push(format!("const {c_ty}* {pname}_data"));
                 c_params.push(format!("size_t {pname}_len"));
-                // Public API takes a Clojure seq; the shim wants a raw
-                // pointer + length, so the generated defn marshals the
-                // seq to a temp buffer internally (documented gap in the
-                // hand-written version's nicer API: this generated one is
-                // intentionally lower-level, matching the flattened-struct
-                // treatment elsewhere — correct, not polished).
                 arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-buf"), public_name: Some(pname.clone()) });
                 arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
                 buffer_wraps.push((format!("{pname}-buf"), jolt_ty.to_string(), pname.clone()));
-                call_args.push(format!(
-                    "(Diplomat{view_suffix}View){{ .data = {pname}_data, .len = {pname}_len }}"
-                ));
+                call_args.push(format!("(Diplomat{view_suffix}View){{ .data = {pname}_data, .len = {pname}_len }}"));
             }
             Type::Struct(_) => {
                 let shape = match resolve_field_shape(tcx, &p.ty, extra_requires) {
@@ -507,40 +473,57 @@ fn gen_method(
                 flatten_leaves(&shape, &pname, &pname, &mut leaves);
                 for (c_ty, flat_c_name, jolt_ty, call_expr) in &leaves {
                     c_params.push(format!("{c_ty} {flat_c_name}"));
-                    arg_specs.push(ArgSpec {
-                        clj_type: jolt_ty.clone(),
-                        call_expr: call_expr.clone(),
-                        public_name: None,
-                    });
+                    arg_specs.push(ArgSpec { clj_type: jolt_ty.clone(), call_expr: call_expr.clone(), public_name: None });
                 }
-                let _ = writeln!(shim_c, "// (constructed inline below, possibly nested)");
                 call_args.push(build_c_literal(&shape, &pname));
             }
+            Type::DiplomatOption(inner) => {
+                // Option<T> param: shim receives (T value, bool is_some).
+                // Jolt caller passes nil → is_some=0, or the value → is_some=1.
+                match inner.as_ref() {
+                    Type::Primitive(prim) => {
+                        let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+                        c_params.push(format!("{c_ty} {pname}_value"));
+                        c_params.push(format!("bool {pname}_is_some"));
+                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)"), public_name: Some(pname.clone()) });
+                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
+                        call_args.push(format!("(DiplomatOption_{c_ty}){{ .value = {pname}_value, .is_some = {pname}_is_some }}"));
+                    }
+                    Type::Enum(ep) => {
+                        let ed = tcx.resolve_enum(ep.tcx_id);
+                        let enum_name = ed.name.as_str().to_string();
+                        let enum_alias = to_kebab(&enum_name);
+                        extra_requires.insert(enum_name.clone());
+                        c_params.push(format!("{enum_name} {pname}_value"));
+                        c_params.push(format!("bool {pname}_is_some"));
+                        arg_specs.push(ArgSpec {
+                            clj_type: ":int".into(),
+                            call_expr: format!("(if {pname} ({enum_alias}/kw->int {pname}) 0)"),
+                            public_name: Some(pname.clone()),
+                        });
+                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
+                        call_args.push(format!("(DiplomatOption_{enum_name}){{ .value = {pname}_value, .is_some = {pname}_is_some }}"));
+                    }
+                    other => {
+                        eprintln!("skipped {owner}::{} (Option<{other:?}> param — only prim/enum supported)", m.name);
+                        return false;
+                    }
+                }
+            }
+            Type::Opaque(op) => {
+                let op_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+                c_params.push(format!("const {op_name}* {pname}"));
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})"), public_name: Some(pname.clone()) });
+                call_args.push(pname);
+            }
             Type::Callback(cb) => {
-                // Real ABI (confirmed against the actual generated header
-                // for Thingy::apply_callback, not assumed):
-                //   struct DiplomatCallback_{owner}_{method}_f {
-                //     const void* data;
-                //     {ret} (*run_callback)(const void*, {params...});
-                //     void (*destructor)(const void*);
-                //   };
-                // passed BY VALUE — same struct-by-value rule as
-                // everywhere else, decomposed to 3 scalars in the shim.
-                // The Jolt-side wiring (self-freeing trampoline pair via
-                // an atom) is exactly the pattern verified end-to-end in
-                // milestone-6-callbacks-findings.md — generated here
-                // verbatim rather than factored into a shared runtime
-                // helper, since the self-referential destructor
-                // construction was only proven in this inline shape.
                 let mut cb_c_params = vec!["const void*".to_string()];
                 let mut cb_jolt_param_types = vec![];
                 let mut cb_param_names = vec![];
                 for (i, cp) in cb.params.iter().enumerate() {
                     let Type::Primitive(prim) = &cp.ty else {
-                        panic!(
-                            "jolt-diplomat-backend: callback param type {:?} unsupported \
-                             (spike scope: primitives only) on {owner}::{}", cp.ty, m.name
-                        );
+                        eprintln!("skipped {owner}::{} (callback param type {:?} unsupported)", m.name, cp.ty);
+                        return false;
                     };
                     let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
                     cb_c_params.push(c_ty.to_string());
@@ -553,10 +536,10 @@ fn gen_method(
                         let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
                         (c_ty.to_string(), jolt_ty.to_string())
                     }
-                    other => panic!(
-                        "jolt-diplomat-backend: callback return type {other:?} unsupported \
-                         (spike scope: primitives or void only) on {owner}::{}", m.name
-                    ),
+                    other => {
+                        eprintln!("skipped {owner}::{} (callback return type {other:?} unsupported)", m.name);
+                        return false;
+                    }
                 };
 
                 let struct_name = format!("DiplomatCallback_{owner}_{}_f", m.name);
@@ -591,17 +574,9 @@ fn gen_method(
                     cb_ffi_types = cb_ffi_types, cb_ret_jolt = cb_ret_jolt
                 ));
 
-                let _ = writeln!(shim_c, "// (DiplomatCallback constructed inline below)");
                 call_args.push(format!(
                     "({struct_name}){{ .data = {pname}_data, .run_callback = {pname}_run_callback, .destructor = {pname}_destructor }}"
                 ));
-            }
-            Type::Opaque(op) => {
-                // Borrowed opaque param (e.g. &DataProvider) — const pointer passthrough.
-                let op_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-                c_params.push(format!("const {op_name}* {pname}"));
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})"), public_name: Some(pname.clone()) });
-                call_args.push(pname);
             }
             other => {
                 eprintln!("skipped {owner}::{} (unsupported param type {other:?})", m.name);
@@ -609,20 +584,28 @@ fn gen_method(
             }
         }
     }
-    // Public params, built directly from m.params (simpler and more
-    // correct than deriving from arg_specs, since a struct param collapses
-    // to ONE public map parameter regardless of how many fields it has).
+
     let mut public_params = vec![];
     if has_self { public_params.push("self".to_string()); }
     for p in &m.params {
-        let pname = to_kebab(p.name.as_str());
-        match &p.ty {
-            Type::Slice(hir::Slice::Primitive(..)) => public_params.push(pname), // seq, marshaled internally
-            _ => public_params.push(pname),
-        }
+        public_params.push(to_kebab(p.name.as_str()));
     }
+
+    // Enum return — resolved to (C type name, enum alias) for int→kw conversion.
+    let enum_return: Option<(String, String)> = if !matches!(m.output, ReturnType::Fallible(_, _)) {
+        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(ep))) = &m.output {
+            let ed = tcx.resolve_enum(ep.tcx_id);
+            let ename = ed.name.as_str().to_string();
+            let alias = to_kebab(&ename);
+            extra_requires.insert(ename.clone());
+            Some((ename, alias))
+        } else { None }
+    } else { None };
+
     let is_write = matches!(m.output, ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _));
-    if is_write {
+    // Nullable(Write): Option<DiplomatWrite> — shim writes to out buffer; returns bool is_some.
+    let is_nullable_write = matches!(m.output, ReturnType::Nullable(SuccessType::Write));
+    if is_write || is_nullable_write {
         c_params.push("DiplomatWrite* write".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "w".into(), public_name: None });
         call_args.push("write".to_string());
@@ -630,12 +613,21 @@ fn gen_method(
 
     let out_ptr_needed = matches!(m.output, ReturnType::Fallible(_, _));
 
-    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write {
+    // Borrowed primitive slice return — shim decomposes to (data_ptr, len) via out param.
+    let borrowed_slice_return: Option<(String, String)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() {
+        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(hir::Slice::Primitive(_, prim)))) = &m.output {
+            let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+            Some((jolt_ty.to_string(), c_ty.to_string()))
+        } else { None }
+    } else { None };
+
+    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
         match &m.output {
             ReturnType::Infallible(SuccessType::Unit) => Some("void"),
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
                 Some(prim_to_jolt_and_c(p).1)
             }
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(_))) => Some("__opaque__"),
             other => {
                 eprintln!("skipped {owner}::{} (unsupported shimmed return {other:?})", m.name);
                 return false;
@@ -645,15 +637,59 @@ fn gen_method(
         None
     };
 
+    // Opaque return via shimmed path: same as direct — wrap the raw pointer.
+    let shimmed_opaque_wrap: Option<String> = if plain_return == Some("__opaque__") {
+        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
+            let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+            if target_name != owner { extra_requires.insert(target_name.clone()); }
+            Some(target_name)
+        } else { None }
+    } else { None };
+
     if out_ptr_needed {
         c_params.push("void* out".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
     }
 
+    // For borrowed slice return: shim takes extra (data_out, len_out) params.
+    if let Some((_, ref c_ty)) = borrowed_slice_return {
+        c_params.push(format!("const {c_ty}** data_out"));
+        c_params.push("size_t* len_out".to_string());
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "data-out".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "len-out".into(), public_name: None });
+    }
+
+    let shim_c_ret = if let Some((ref ename, _)) = enum_return {
+        ename.as_str()
+    } else if is_nullable_write {
+        "bool"
+    } else if borrowed_slice_return.is_some() {
+        "void"
+    } else {
+        match plain_return {
+            Some("__opaque__") => "void*",
+            Some(t) => t,
+            None => "void",
+        }
+    };
     let real_call = format!("{owner}_{}({})", m.name, call_args.join(", "));
-    let shim_c_ret = plain_return.unwrap_or("void");
     let _ = writeln!(shim_c, "{shim_c_ret} {shim_sym}({}) {{", c_params.join(", "));
-    if out_ptr_needed {
+    if let Some((_, ref c_ty)) = borrowed_slice_return {
+        // DiplomatXView { data, size } — decompose to out params.
+        let view_prim = if c_ty == "size_t" {
+            PrimitiveType::IntSize(IntSizeType::Usize)
+        } else {
+            PrimitiveType::Int(match c_ty.as_str() {
+                "uint8_t" => IntType::U8, "int32_t" => IntType::I32, "uint32_t" => IntType::U32,
+                "int64_t" => IntType::I64, "uint64_t" => IntType::U64,
+                _ => IntType::I32,
+            })
+        };
+        let view_suffix = prim_to_diplomat_view_suffix(&view_prim);
+        let _ = writeln!(shim_c, "    Diplomat{view_suffix}View sv = {real_call};");
+        let _ = writeln!(shim_c, "    *data_out = sv.data;");
+        let _ = writeln!(shim_c, "    *len_out = sv.size;");
+    } else if out_ptr_needed {
         let result_ty = format!("{owner}_{}_result", m.name);
         let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
         let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
@@ -665,26 +701,27 @@ fn gen_method(
     let _ = writeln!(shim_c, "}}");
     let _ = writeln!(shim_c);
 
-    let clj_ret_ty = match plain_return {
-        Some("void") | None => ":void",
-        Some(c_ty) => {
-            // reverse-map C type back to jolt keyword for the defcfn return
-            match c_ty {
+    let clj_ret_ty = if borrowed_slice_return.is_some() {
+        ":void"
+    } else if enum_return.is_some() {
+        ":int"
+    } else if is_nullable_write {
+        ":int"
+    } else {
+        match plain_return {
+            Some("void") | None => ":void",
+            Some("__opaque__") => ":pointer",
+            Some(c_ty) => match c_ty {
                 "uint8_t" => ":uint8",
-                "uint16_t" => ":uint",
-                "int16_t" => ":int",
-                "int8_t" => ":int",
-                "uint32_t" => ":uint",
-                "int32_t" => ":int",
+                "uint16_t" | "uint32_t" | "char32_t" => ":uint",
+                "int16_t" | "int8_t" | "int32_t" | "bool" => ":int",
                 "int64_t" => ":int64",
                 "uint64_t" => ":uint64",
                 "size_t" => ":size_t",
                 "ssize_t" => ":ssize_t",
-                "double" => ":double",
-                "bool" => ":int",
-                "char32_t" => ":uint",
+                "double" | "float" => ":double",
                 _ => panic!("jolt-diplomat-backend: no jolt return keyword for C type {c_ty}"),
-            }
+            },
         }
     };
 
@@ -708,6 +745,14 @@ fn gen_method(
         body_lines.push("       {:ok? false :error (ffi/read out :int 0)})".to_string());
         body_lines.push(format!("     \"{owner}/{fn_name}\")"));
         body_lines.push("    (finally (ffi/free out))))".to_string());
+    } else if is_nullable_write {
+        // Nullable(Write) — shim returns bool; Jolt gets String or nil.
+        body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
+        body_lines.push("  (try".to_string());
+        body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
+        body_lines.push(format!("    (let [ok (c-{fn_name} {})]", shim_call_exprs.join(" ")));
+        body_lines.push("      (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))".to_string());
+        body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
     } else if is_write {
         body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
         body_lines.push("  (try".to_string());
@@ -715,6 +760,28 @@ fn gen_method(
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push("    (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))".to_string());
         body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
+    } else if let Some((ref jolt_ty, _)) = borrowed_slice_return {
+        // Borrowed slice — shim writes (data_ptr, len) into out params on stack.
+        // Jolt reads them back. The pointer is borrowed from self; lifetime = self.
+        body_lines.push(format!("(let [data-out (ffi/alloc 8) len-out (ffi/alloc 8)]"));
+        body_lines.push("  (try".to_string());
+        body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
+        body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
+        body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))"));
+        body_lines.push("    (finally (ffi/free data-out) (ffi/free len-out))))".to_string());
+    } else if let Some((_, ref alias)) = enum_return {
+        // Enum return — shim returns int, convert to keyword.
+        let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
+        body_lines.push(format!("({alias}/int->kw {call_expr})"));
+    } else if let Some(target) = &shimmed_opaque_wrap {
+        let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
+        let wrap = if target != owner {
+            let alias = to_kebab(target);
+            format!("({alias}/->{target} {call_expr} false)")
+        } else {
+            format!("(->{target} {call_expr} false)")
+        };
+        body_lines.push(wrap);
     } else {
         body_lines.push(format!("(c-{fn_name} {})", shim_call_exprs.join(" ")));
     }
@@ -758,5 +825,7 @@ fn gen_enum_clj(en: &hir::EnumDef) -> String {
         let _ = writeln!(out, "  :{} {}", to_kebab(v.name.as_ref()), v.discriminant);
     }
     let _ = writeln!(out, "  }})");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "(def int->kw (clojure.set/map-invert kw->int))");
     out
 }

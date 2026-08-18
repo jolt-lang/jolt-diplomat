@@ -4,3 +4,5 @@
 (def kw->int {
   :parse-error 0
   })
+
+(def int->kw (clojure.set/map-invert kw->int))
