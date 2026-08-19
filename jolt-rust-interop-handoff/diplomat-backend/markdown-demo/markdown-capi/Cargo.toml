@@ -1,0 +1,13 @@
+[package]
+name = "markdown-capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "markdown_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+markdown = "1.0.0"
+diplomat = { version = ">=0.14,<0.16" }
+diplomat-runtime = { version = ">=0.14,<0.16" }

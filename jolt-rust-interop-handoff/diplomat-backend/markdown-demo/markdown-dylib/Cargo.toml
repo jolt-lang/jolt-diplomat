@@ -9,3 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 markdown = "1.0.0"
+interoptopus = { version = "0.16.4", features = ["macros"] }
+
+[dev-dependencies]
+interoptopus_backend_c = "0.16"
