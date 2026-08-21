@@ -4,7 +4,7 @@
 
 (require '[jolt.ffi :as ffi])
 (ffi/load-library (str demo-dir "/markdown-capi/target/release/libmarkdown_capi.dylib"))
-(ffi/load-library (str demo-dir "/libmarkdown_shim.dylib"))
+(ffi/load-library (str demo-dir "/libmarkdown_capi_shim.dylib"))
 
 (require '[diplomat.runtime :as dr])
 (require '[diplomat.markdown :as md])

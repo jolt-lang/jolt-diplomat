@@ -4,7 +4,7 @@
 
 (require '[jolt.ffi :as ffi])
 (ffi/load-library (str demo-dir "/regex-capi/target/release/libregex_capi.dylib"))
-(ffi/load-library (str demo-dir "/libregex_shim.dylib"))
+(ffi/load-library (str demo-dir "/libregex_capi_shim.dylib"))
 
 (require '[diplomat.runtime :as dr])
 (require '[diplomat.regex :as rx])
