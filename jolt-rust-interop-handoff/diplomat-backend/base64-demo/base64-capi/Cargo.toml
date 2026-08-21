@@ -1,0 +1,14 @@
+[package]
+name = "base64-capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "base64_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+diplomat = { version = ">=0.14,<0.16" }
+diplomat-runtime = { version = ">=0.14,<0.16" }
