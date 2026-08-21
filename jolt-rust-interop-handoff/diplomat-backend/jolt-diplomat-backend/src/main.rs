@@ -687,7 +687,16 @@ fn gen_method(
         } else { None }
     } else { None };
 
-    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
+    // Nullable(OutType(Primitive(_))): real fn returns OptionX { T ok; bool is_ok; }.
+    // Shim decomposes to (T* out_val, bool* out_is_ok); Jolt reads is_ok to decide nil vs value.
+    let nullable_prim_return: Option<(&'static str, &'static str)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
+        if let ReturnType::Nullable(SuccessType::OutType(hir::OutType::Primitive(p))) = &m.output {
+            let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
+            Some((jolt_ty, c_ty))
+        } else { None }
+    } else { None };
+
+    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && nullable_prim_return.is_none() {
         match &m.output {
             ReturnType::Infallible(SuccessType::Unit) => Some("void"),
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
@@ -725,6 +734,13 @@ fn gen_method(
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "len-out".into(), public_name: None });
     }
 
+    if let Some((_, c_ty)) = nullable_prim_return {
+        c_params.push(format!("{c_ty}* out_val"));
+        c_params.push("bool* out_is_ok".to_string());
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-val".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-is-ok".into(), public_name: None });
+    }
+
     // Nullable(Write) C ABI: {abi_name}_result { bool is_ok } returned by value.
     // Our shim returns int (0=none, 1=wrote) so Jolt can check it.
     // We need the result_ty string; compute it now.
@@ -736,7 +752,7 @@ fn gen_method(
         ename.as_str()
     } else if is_nullable_write {
         "int"
-    } else if borrowed_slice_return.is_some() {
+    } else if borrowed_slice_return.is_some() || nullable_prim_return.is_some() {
         "void"
     } else {
         match plain_return {
@@ -747,7 +763,13 @@ fn gen_method(
     };
     let real_call = format!("{}({})", m.abi_name, call_args.join(", "));
     let _ = writeln!(shim_c, "{shim_c_ret} {shim_sym}({}) {{", c_params.join(", "));
-    if let Some((_, ref c_ty)) = borrowed_slice_return {
+    if let Some((_, c_ty)) = nullable_prim_return {
+        // Diplomat C ABI for Nullable(Prim): {fn_abi_name}_result { union { T ok; }; bool is_ok; }
+        let result_ty = format!("{}_result", m.abi_name);
+        let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
+        let _ = writeln!(shim_c, "    *out_val = ({c_ty})r.ok;");
+        let _ = writeln!(shim_c, "    *out_is_ok = r.is_ok;");
+    } else if let Some((_, ref c_ty)) = borrowed_slice_return {
         // DiplomatXView { data, size } — decompose to out params.
         let view_prim = if c_ty == "size_t" {
             PrimitiveType::IntSize(IntSizeType::Usize)
@@ -880,6 +902,13 @@ fn gen_method(
         body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
         body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))"));
         body_lines.push("    (finally (ffi/free data-out) (ffi/free len-out))))".to_string());
+    } else if let Some((ref jolt_ty, _)) = nullable_prim_return {
+        // Nullable(Prim): shim writes value into out-val, bool into out-is-ok.
+        body_lines.push(format!("(let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]"));
+        body_lines.push("  (try".to_string());
+        body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
+        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val {jolt_ty} 0))"));
+        body_lines.push("    (finally (ffi/free out-val) (ffi/free out-is-ok))))".to_string());
     } else if let Some((_, ref alias)) = enum_return {
         // Enum return — shim returns int, convert to keyword.
         let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
