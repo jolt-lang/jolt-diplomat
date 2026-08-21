@@ -124,15 +124,19 @@
 ;; -----------------------------------------------------------------------
 
 (defn unwrap-result!
-  "raw-result: {:ok? bool :value v :error e}, decoded from the shim's
-  out-pointer by the generated per-type reader (using the same
-  generated-offset-table mechanism as struct params — is_ok, ok/err union,
-  offsets computed by offset-gen against the real per-instantiation
-  *_result struct, never hand-copied)."
-  [{:keys [ok? value error] :as _raw-result} method-name]
-  (if ok?
-    value
-    (throw (ex-info (str method-name " failed") {:diplomat/error error}))))
+  "raw-result: {:ok? bool :value v :error e}.
+  Optional message-fn: called with the error value to produce a string
+  for the exception message — use when the error is an opaque with a
+  message() method rather than a raw int."
+  ([{:keys [ok? value error] :as _raw-result} method-name]
+   (unwrap-result! _raw-result method-name nil))
+  ([{:keys [ok? value error] :as _raw-result} method-name message-fn]
+   (if ok?
+     value
+     (let [msg (if (and message-fn error)
+                 (str method-name " failed: " (String. (message-fn error)))
+                 (str method-name " failed"))]
+       (throw (ex-info msg {:diplomat/error error}))))))
 
 ;; -----------------------------------------------------------------------
 ;; DiplomatWriteable — Jolt owns the buffer the whole time, so there's no

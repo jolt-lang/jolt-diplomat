@@ -27,4 +27,5 @@
   (try
     (rx/create "[invalid")
     (catch clojure.lang.ExceptionInfo e
-      (println "bad pattern error:" (ex-data e)))))
+      (println "bad pattern message:" (ex-message e))
+      (println "bad pattern data:"    (ex-data e)))))

@@ -160,13 +160,13 @@ fn main() {
         match def {
             TypeDef::Opaque(op) => {
                 let clj = gen_opaque_clj(&tcx, op, &mut shim_c);
-                let path = clj_dir.join(format!("{}.clj", to_kebab(op.name.as_ref())));
+                let path = clj_dir.join(format!("{}.clj", to_snake(op.name.as_ref())));
                 std::fs::write(&path, clj).unwrap();
                 println!("wrote {}", path.display());
             }
             TypeDef::Enum(en) => {
                 let clj = gen_enum_clj(en);
-                let path = clj_dir.join(format!("{}.clj", to_kebab(en.name.as_ref())));
+                let path = clj_dir.join(format!("{}.clj", to_snake(en.name.as_ref())));
                 std::fs::write(&path, clj).unwrap();
                 println!("wrote {}", path.display());
             }
@@ -670,6 +670,15 @@ fn gen_method(
 
     let out_ptr_needed = matches!(m.output, ReturnType::Fallible(_, _));
 
+    // If the error type is an opaque, capture its name so we can read the error
+    // as a pointer and wrap it rather than treating it as a raw int.
+    let opaque_error: Option<(String, String)> = if let ReturnType::Fallible(_, Some(Type::Opaque(ep))) = &m.output {
+        let err_name = tcx.resolve_opaque(ep.tcx_id).name.as_str().to_string();
+        let err_alias = to_kebab(&err_name);
+        extra_requires.insert(err_name.clone());
+        Some((err_name, err_alias))
+    } else { None };
+
     // Borrowed primitive slice return — shim decomposes to (data_ptr, len) via out param.
     let borrowed_slice_return: Option<(String, String)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() {
         if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(hir::Slice::Primitive(_, prim)))) = &m.output {
@@ -808,6 +817,12 @@ fn gen_method(
         let result_c_ty = format!("{}_result", m.abi_name);
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{fn_name}-result \"{result_sizeof_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {result_sizeof_sym}(void) {{ return sizeof({result_c_ty}); }}");
+        // Use ->ErrName for opaque errors, raw int otherwise.
+        let err_read = match &opaque_error {
+            Some((err_name, err_alias)) =>
+                format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) true)"),
+            None => "(ffi/read out :int 0)".to_string(),
+        };
         if is_write {
             // Fallible(Write, E): shim receives (... write out); on success returns string.
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]"));
@@ -817,8 +832,13 @@ fn gen_method(
             body_lines.push("    (dr/unwrap-result!".to_string());
             body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
             body_lines.push("       {:ok? true :value (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))}".to_string());
-            body_lines.push("       {:ok? false :error (ffi/read out :int 0)})".to_string());
-            body_lines.push(format!("     \"{owner}/{fn_name}\")"));
+            body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
+            let msg_fn = opaque_error.as_ref().map(|(_, a)| format!("{a}/message")).unwrap_or_default();
+            if msg_fn.is_empty() {
+                body_lines.push(format!("     \"{owner}/{fn_name}\")"));
+            } else {
+                body_lines.push(format!("     \"{owner}/{fn_name}\" {msg_fn})"));
+            }
             body_lines.push("    (finally (ffi/free out) (ffi/free buf) (ffi/free w))))".to_string());
         } else {
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
@@ -827,8 +847,13 @@ fn gen_method(
             body_lines.push("    (dr/unwrap-result!".to_string());
             body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
             body_lines.push(format!("       {{:ok? true :value (->{owner} (ffi/read out :pointer 0) false)}}"));
-            body_lines.push("       {:ok? false :error (ffi/read out :int 0)})".to_string());
-            body_lines.push(format!("     \"{owner}/{fn_name}\")"));
+            body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
+            let msg_fn = opaque_error.as_ref().map(|(_, a)| format!("{a}/message")).unwrap_or_default();
+            if msg_fn.is_empty() {
+                body_lines.push(format!("     \"{owner}/{fn_name}\")"));
+            } else {
+                body_lines.push(format!("     \"{owner}/{fn_name}\" {msg_fn})"));
+            }
             body_lines.push("    (finally (ffi/free out))))".to_string());
         }
     } else if is_nullable_write {

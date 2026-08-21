@@ -3,6 +3,7 @@
   Do not hand-edit — see findings/milestone-5-findings.md."
   (:require [jolt.ffi :as ffi]
             [diplomat.runtime :as dr]
+            [diplomat.regex-error :as regex-error]
   ))
 
 (dr/defopaque Regex "rx_Regex_destroy_mv1")
@@ -16,8 +17,8 @@
       (dr/unwrap-result!
        (if (= 1 (ffi/read out :uint8 8))
          {:ok? true :value (->Regex (ffi/read out :pointer 0) false)}
-         {:ok? false :error (ffi/read out :int 0)})
-       "Regex/create")
+         {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) true)})
+       "Regex/create" regex-error/message)
       (finally (ffi/free out))))
 )
 
