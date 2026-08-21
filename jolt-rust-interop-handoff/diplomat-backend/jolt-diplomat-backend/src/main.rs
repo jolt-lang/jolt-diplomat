@@ -360,17 +360,22 @@ fn gen_method(
     }
 
     // Detect whether ANY crossing needs the shim.
+    // Option<Box<Opaque>>: HIR = Infallible(OutType(Opaque { optional: Yes })) → nullable pointer.
+    // No shim needed — direct path handles null check.
+    let is_nullable_opaque = matches!(&m.output,
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) if op.is_optional());
+
     let needs_shim = m.params.iter().any(|p| matches!(
         p.ty,
         Type::Struct(_) | Type::Slice(_) | Type::Callback(_) | Type::Enum(_) |
         Type::Opaque(_) | Type::DiplomatOption(_)
     ))
         || matches!(m.output, ReturnType::Fallible(_, _))
-        || matches!(m.output,
+        || (!is_nullable_opaque && matches!(m.output,
             ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _) |
             ReturnType::Nullable(_) |
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(_))) |
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_))));
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_)))));
 
     if !needs_shim {
         // Direct defcfn — only primitives in params and a simple return.
@@ -393,6 +398,15 @@ fn gen_method(
             public_names.push(n.clone());
             call_exprs.push(n);
         }
+        // Option<Box<Opaque>>: Diplomat HIR = Infallible(OutType(Opaque { optional: Optional(true) })).
+        // C ABI is a nullable pointer (NULL = None). Direct path, no shim needed.
+        let nullable_opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
+            if op.is_optional() {
+                let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+                if target_name != owner { extra_requires.insert(target_name.clone()); }
+                Some(target_name)
+            } else { None }
+        } else { None };
         let ret_ty = match &m.output {
             ReturnType::Infallible(SuccessType::Unit) => ":void",
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => prim_to_jolt_and_c(p).0,
@@ -403,21 +417,34 @@ fn gen_method(
             }
         };
         let opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
-            let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-            if target_name != owner { extra_requires.insert(target_name.clone()); }
-            Some(target_name)
+            if !op.is_optional() {
+                let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+                if target_name != owner { extra_requires.insert(target_name.clone()); }
+                Some(target_name)
+            } else { None }
         } else { None };
         let c_sym = m.abi_name.to_string();
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty})",
             arg_types.join(" "));
         let call = format!("(c-{fn_name} {})", call_exprs.join(" "));
-        let body = match &opaque_wrap {
-            Some(target) if target != owner => {
+        let body = if let Some(ref target) = nullable_opaque_wrap {
+            // Null pointer → nil; non-null → wrapped opaque (owns the allocation).
+            let wrap = if target != owner {
                 let alias = to_kebab(target);
-                format!("({alias}/->{target} {call} false)")
+                format!("({alias}/->{target} p true)")
+            } else {
+                format!("(->{target} p true)")
+            };
+            format!("(let [p {call}] (when (not= 0 p) {wrap}))")
+        } else {
+            match &opaque_wrap {
+                Some(target) if target != owner => {
+                    let alias = to_kebab(target);
+                    format!("({alias}/->{target} {call} false)")
+                }
+                Some(target) => format!("(->{target} {call} false)"),
+                None => call,
             }
-            Some(target) => format!("(->{target} {call} false)"),
-            None => call,
         };
         let _ = writeln!(out, "(defn {fn_name} [{}] {body})", public_names.join(" "));
         let _ = writeln!(out);
