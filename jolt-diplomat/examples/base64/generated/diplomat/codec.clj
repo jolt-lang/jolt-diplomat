@@ -17,27 +17,22 @@
 (ffi/defcfn ^:private c-encode "jolt_b64_Codec_encode_mv1" [:pointer :pointer :size_t :pointer] :void)
 (defn encode [self input]
   (dr/with-primitive-buffer [input-buf :uint8 input]
-    (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-      (try
-        (dr/simple-write! buf 256 w)
-        (c-encode (:ptr self) input-buf (count input) w)
-        (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-        (finally (ffi/free buf) (ffi/free w))))
+    (dr/writeable-capture (fn [w__] (c-encode (:ptr self) input-buf (count input) w__)))
   )
 )
 
 (ffi/defcfn ^:private c-decode "jolt_b64_Codec_decode_mv1" [:pointer :string :size_t :pointer :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-decode-result "jolt_sizeof_b64_Codec_decode_mv1_result" [] :int)
 (defn decode [self input]
-  (let [sz (c-sizeof-decode-result) out (ffi/alloc sz) buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
+  (let [sz (c-sizeof-decode-result) out (ffi/alloc sz)]
     (try
-      (dr/simple-write! buf 256 w)
-      (c-decode (:ptr self) input (count input) w out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
-         {:ok? true :value (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))}
-         {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) true)})
-       "Codec/decode" base64-error/message)
-      (finally (ffi/free out) (ffi/free buf) (ffi/free w))))
+      (let [s (dr/writeable-capture (fn [w__] (c-decode (:ptr self) input (count input) w__ out)))]
+        (dr/unwrap-result!
+         (if (= 1 (ffi/read out :uint8 8))
+           {:ok? true :value s}
+           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) true)})
+             "Codec/decode" base64-error/message)
+      )
+      (finally (ffi/free out))))
 )
 

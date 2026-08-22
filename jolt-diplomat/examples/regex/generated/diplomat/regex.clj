@@ -29,21 +29,12 @@
 
 (ffi/defcfn ^:private c-find "jolt_rx_Regex_find_mv1" [:pointer :string :size_t :pointer] :int)
 (defn find [self text]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-find (:ptr self) text (count text) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-find (:ptr self) text (count text) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-replace-all "jolt_rx_Regex_replace_all_mv1" [:pointer :string :size_t :string :size_t :pointer] :void)
 (defn replace-all [self text replacement]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-replace-all (:ptr self) text (count text) replacement (count replacement) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-replace-all (:ptr self) text (count text) replacement (count replacement) w__)))
 )
 

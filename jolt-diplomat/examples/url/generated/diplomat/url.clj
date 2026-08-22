@@ -24,42 +24,24 @@
 
 (ffi/defcfn ^:private c-scheme "jolt_url_Url_scheme_mv1" [:pointer :pointer] :void)
 (defn scheme [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-scheme (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-scheme (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-host "jolt_url_Url_host_mv1" [:pointer :pointer] :int)
 (defn host [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-host (:ptr self) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-host (:ptr self) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-path "jolt_url_Url_path_mv1" [:pointer :pointer] :void)
 (defn path [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-path (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-path (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-query "jolt_url_Url_query_mv1" [:pointer :pointer] :int)
 (defn query [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-query (:ptr self) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-query (:ptr self) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-port "jolt_url_Url_port_mv1" [:pointer :pointer :pointer] :void)
@@ -73,12 +55,7 @@
 
 (ffi/defcfn ^:private c-to-string "jolt_url_Url_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-to-string (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-sizeof-url-info-struct "jolt_sizeof_url_info_mv1" [] :int)

@@ -983,17 +983,24 @@ fn gen_method(
                 format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) true)"),
             None => "(ffi/read out :int 0)".to_string(),
         };
+        // "w" literal in shim_call_exprs → replaced by lambda arg name "w__"
+        // to avoid shadowing; out_ptr_needed path also has "out" in exprs.
+        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
+            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
+            .collect();
         if is_write {
-            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]"));
+            let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+            let msg_suffix = msg_fn_suffix(&opaque_error, &fn_name);
+            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
             body_lines.push("  (try".to_string());
-            body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
-            body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-            body_lines.push("    (dr/unwrap-result!".to_string());
-            body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
-            body_lines.push("       {:ok? true :value (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))}".to_string());
-            body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
-            body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
-            body_lines.push("    (finally (ffi/free out) (ffi/free buf) (ffi/free w))))".to_string());
+            body_lines.push(format!("    (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
+            body_lines.push("      (dr/unwrap-result!".to_string());
+            body_lines.push("       (if (= 1 (ffi/read out :uint8 8))".to_string());
+            body_lines.push("         {:ok? true :value s}".to_string());
+            body_lines.push(format!("         {{:ok? false :error {err_read}}})"));
+            body_lines.push(format!("      {msg_suffix}")); // closes unwrap-result!
+            body_lines.push("    )".to_string());           // closes let [s ...]
+            body_lines.push("    (finally (ffi/free out))))".to_string()); // finally + try + outer-let
         } else {
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
             body_lines.push("  (try".to_string());
@@ -1006,19 +1013,20 @@ fn gen_method(
             body_lines.push("    (finally (ffi/free out))))".to_string());
         }
     } else if is_nullable_write {
-        body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
-        body_lines.push("  (try".to_string());
-        body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
-        body_lines.push(format!("    (let [ok (c-{fn_name} {})]", shim_call_exprs.join(" ")));
-        body_lines.push("      (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))".to_string());
-        body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
+        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
+            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
+            .collect();
+        let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+        body_lines.push(format!(
+            "(let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 {inner_call}))))]"
+        ));
+        body_lines.push("  (when @ok s))".to_string());
     } else if is_write {
-        body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
-        body_lines.push("  (try".to_string());
-        body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
-        body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-        body_lines.push("    (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))".to_string());
-        body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
+        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
+            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
+            .collect();
+        let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+        body_lines.push(format!("(dr/writeable-capture (fn [w__] {inner_call}))"))
     } else if let ReturnKind::BorrowedSlice { jolt_ty, .. } = &rk {
         body_lines.push(format!("(let [data-out (ffi/alloc 8) len-out (ffi/alloc 8)]"));
         body_lines.push("  (try".to_string());

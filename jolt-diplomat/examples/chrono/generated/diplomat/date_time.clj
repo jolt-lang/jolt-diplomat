@@ -30,22 +30,13 @@
 
 (ffi/defcfn ^:private c-to-rfc3339 "jolt_chrono_DateTime_to_rfc3339_mv1" [:pointer :pointer] :void)
 (defn to-rfc3339 [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-to-rfc3339 (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-to-rfc3339 (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-format "jolt_chrono_DateTime_format_mv1" [:pointer :string :size_t :pointer] :int)
 (defn format [self fmt]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-format (:ptr self) fmt (count fmt) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-format (:ptr self) fmt (count fmt) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-timestamp-secs "chrono_DateTime_timestamp_secs_mv1" [:pointer] :int64)

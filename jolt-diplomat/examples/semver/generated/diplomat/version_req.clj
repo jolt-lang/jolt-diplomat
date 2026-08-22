@@ -29,11 +29,6 @@
 
 (ffi/defcfn ^:private c-to-string "jolt_sv_VersionReq_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-to-string (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
 )
 

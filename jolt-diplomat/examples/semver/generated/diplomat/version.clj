@@ -33,12 +33,7 @@
 
 (ffi/defcfn ^:private c-to-string "jolt_sv_Version_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-to-string (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-is-prerelease "sv_Version_is_prerelease_mv1" [:pointer] :int)
@@ -46,11 +41,7 @@
 
 (ffi/defcfn ^:private c-pre "jolt_sv_Version_pre_mv1" [:pointer :pointer] :int)
 (defn pre [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-pre (:ptr self) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-pre (:ptr self) w__)))))]
+    (when @ok s))
 )
 

@@ -48,12 +48,8 @@
 
 (ffi/defcfn ^:private c-as-str "jolt_json_JsonValue_as_str_mv1" [:pointer :pointer] :int)
 (defn as-str [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-as-str (:ptr self) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-as-str (:ptr self) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-array-len "jolt_json_JsonValue_array_len_mv1" [:pointer :pointer :pointer] :void)
@@ -70,21 +66,12 @@
 
 (ffi/defcfn ^:private c-object-get "jolt_json_JsonValue_object_get_mv1" [:pointer :string :size_t :pointer] :int)
 (defn object-get [self key]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (let [ok (c-object-get (:ptr self) key (count key) w)]
-        (when (not= 0 ok) (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))))
-      (finally (ffi/free buf) (ffi/free w))))
+  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-object-get (:ptr self) key (count key) w__)))))]
+    (when @ok s))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_json_JsonValue_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-to-string (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
 )
 

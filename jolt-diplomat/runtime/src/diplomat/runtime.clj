@@ -20,11 +20,6 @@
 ;; would in C" posture documented in the native-interop guide.
 ;; -----------------------------------------------------------------------
 
-(def ^:dynamic *opaque-lifecycle*
-  "Either :explicit (Plan B, default — caller must (close! x) or use
-  with-open) or :guarded (Plan A — requires jolt.ffi finalizer support)."
-  :explicit)
-
 ;; A generic close! needs single dispatch across every opaque type
 ;; defopaque ever defines — a protocol, extended per-type inside the
 ;; macro, rather than a bare fn each type would otherwise shadow. (The
@@ -109,21 +104,6 @@
      (try
        (dotimes [i# n#]
          (ffi/write ~buf-sym ~elem-type (* i# w#) (nth items# i#)))
-       ~@body
-       (finally (ffi/free ~buf-sym)))))
-
-(defmacro with-u8-buffer
-  "Marshals a Clojure seq of byte values to a temp C buffer for the scope
-  of body, freeing it afterward. Used by generated bindings for slice
-  parameters (e.g. Thingy::sum_with's &[u8]) — the shim wants a raw
-  pointer+length; this is the seq->buffer marshaling the hand-written
-  version did inline, factored out so generated code can reuse it."
-  [[buf-sym seq-expr] & body]
-  `(let [n#   (count ~seq-expr)
-         ~buf-sym (ffi/alloc (max n# 1))]
-     (try
-       (doseq [[i# v#] (map-indexed vector ~seq-expr)]
-         (ffi/write ~buf-sym :uint8 i# v#))
        ~@body
        (finally (ffi/free ~buf-sym)))))
 
@@ -245,23 +225,3 @@
   (bit-or (ffi/read ptr :uint8 offset)
           (bit-shift-left (ffi/read ptr :uint8 (+ offset 1)) 8)))
 
-(defn struct->ptr
-  "field-offsets: {:field-name [byte-offset ffi-type]}, generated per-type
-  by the backend (PLAN.md Milestone 6). m: a Clojure map with matching
-  keys. Allocates and returns a pointer the caller must free (or wrap in
-  with-opaque-style scoping) — this is a transient marshaling buffer, not
-  a value with independent lifetime, so a plain try/finally at the call
-  site is the right amount of ceremony, not a guardian."
-  [field-offsets size m]
-  (let [p (ffi/alloc size)]
-    (doseq [[field [offset ffi-type]] field-offsets]
-      (ffi/write p ffi-type offset (get m field)))
-    p))
-
-(defn ptr->struct
-  "Inverse of struct->ptr, for structs Rust returns by value into
-  caller-provided memory."
-  [field-offsets ptr]
-  (into {}
-        (for [[field [offset ffi-type]] field-offsets]
-          [field (ffi/read ptr ffi-type offset)])))

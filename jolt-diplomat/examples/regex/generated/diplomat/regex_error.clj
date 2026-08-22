@@ -9,11 +9,6 @@
 
 (ffi/defcfn ^:private c-message "jolt_rx_RegexError_message_mv1" [:pointer :pointer] :void)
 (defn message [self]
-  (let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]
-    (try
-      (dr/simple-write! buf 256 w)
-      (c-message (:ptr self) w)
-      (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))
-      (finally (ffi/free buf) (ffi/free w))))
+  (dr/writeable-capture (fn [w__] (c-message (:ptr self) w__)))
 )
 
