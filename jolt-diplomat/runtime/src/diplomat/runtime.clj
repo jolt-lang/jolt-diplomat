@@ -218,6 +218,21 @@
 ;; the native-interop guide's "write the layout out by hand" pattern.
 ;; -----------------------------------------------------------------------
 
+(defn writeable-capture-when
+  "Like writeable-capture but returns nil when f returns a falsy value.
+  f receives the DiplomatWrite pointer and should return truthy on success."
+  [f]
+  (let [buf (ffi/alloc initial-buffer-size)
+        w   (ffi/alloc writeable-struct-size)]
+    (try
+      (c-simple-write buf initial-buffer-size w)
+      (when (not= 0 (f w))
+        (let [n (ffi/read w :size_t O-len)]
+          (ffi/read-bytes buf n)))
+      (finally
+        (ffi/free buf)
+        (ffi/free w)))))
+
 (defn read-u16
   "Read a little-endian uint16 from ptr at byte offset. Jolt ffi has no
   16-bit read type, so we combine two uint8 reads."

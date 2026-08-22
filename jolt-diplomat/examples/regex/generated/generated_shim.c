@@ -15,6 +15,7 @@ void jolt_rx_Regex_create_mv1(const char* pattern_data, size_t pattern_len, void
 }
 
 size_t jolt_sizeof_rx_Regex_create_mv1_result(void) { return sizeof(rx_Regex_create_mv1_result); }
+size_t jolt_offsetof_rx_Regex_create_mv1_result_is_ok(void) { return offsetof(rx_Regex_create_mv1_result, is_ok); }
 bool jolt_rx_Regex_is_match_mv1(const Regex* self, const char* text_data, size_t text_len) {
     return rx_Regex_is_match_mv1(self, (DiplomatStringView){ .data = text_data, .len = text_len });
 }

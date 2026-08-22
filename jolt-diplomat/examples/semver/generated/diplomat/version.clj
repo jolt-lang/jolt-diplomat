@@ -10,14 +10,15 @@
 
 (ffi/defcfn ^:private c-parse "jolt_sv_Version_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_sv_Version_parse_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_sv_Version_parse_mv1_result_is_ok" [] :int)
 (defn parse [text]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
     (try
       (c-parse text (count text) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
          {:ok? true :value (->Version (ffi/read out :pointer 0) false)}
-         {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) true)})
+         {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) false)})
        "Version/parse" parse-error/message)
       (finally (ffi/free out))))
 )
@@ -41,7 +42,6 @@
 
 (ffi/defcfn ^:private c-pre "jolt_sv_Version_pre_mv1" [:pointer :pointer] :int)
 (defn pre [self]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-pre (:ptr self) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-pre (:ptr self) w__)))
 )
 

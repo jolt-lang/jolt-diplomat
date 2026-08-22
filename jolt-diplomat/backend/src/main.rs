@@ -975,12 +975,16 @@ fn gen_method(
 
     if out_ptr_needed {
         let result_sizeof_sym = format!("jolt_sizeof_{}_result", m.abi_name);
+        let result_is_ok_offset_sym = format!("jolt_offsetof_{}_result_is_ok", m.abi_name);
         let result_c_ty = format!("{}_result", m.abi_name);
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{fn_name}-result \"{result_sizeof_sym}\" [] :int)");
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-is-ok-offset-{fn_name} \"{result_is_ok_offset_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {result_sizeof_sym}(void) {{ return sizeof({result_c_ty}); }}");
+        let _ = writeln!(shim_c, "size_t {result_is_ok_offset_sym}(void) {{ return offsetof({result_c_ty}, is_ok); }}");
+        // Fix 1: error opaques are owned (closed?=false), not already-freed (closed?=true).
         let err_read = match &opaque_error {
             Some((err_name, err_alias)) =>
-                format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) true)"),
+                format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) false)"),
             None => "(ffi/read out :int 0)".to_string(),
         };
         // "w" literal in shim_call_exprs → replaced by lambda arg name "w__"
@@ -991,22 +995,22 @@ fn gen_method(
         if is_write {
             let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
             let msg_suffix = msg_fn_suffix(&opaque_error, &fn_name);
-            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
+            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
             body_lines.push("  (try".to_string());
             body_lines.push(format!("    (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
             body_lines.push("      (dr/unwrap-result!".to_string());
-            body_lines.push("       (if (= 1 (ffi/read out :uint8 8))".to_string());
+            body_lines.push("       (if (= 1 (ffi/read out :uint8 is-ok-off))".to_string());
             body_lines.push("         {:ok? true :value s}".to_string());
             body_lines.push(format!("         {{:ok? false :error {err_read}}})"));
             body_lines.push(format!("      {msg_suffix}")); // closes unwrap-result!
             body_lines.push("    )".to_string());           // closes let [s ...]
-            body_lines.push("    (finally (ffi/free out))))".to_string()); // finally + try + outer-let
+            body_lines.push("    (finally (ffi/free out))))".to_string());
         } else {
-            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
+            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
             body_lines.push("  (try".to_string());
             body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
             body_lines.push("    (dr/unwrap-result!".to_string());
-            body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
+            body_lines.push("     (if (= 1 (ffi/read out :uint8 is-ok-off))".to_string());
             body_lines.push(format!("       {{:ok? true :value (->{owner} (ffi/read out :pointer 0) false)}}"));
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
             body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
@@ -1017,10 +1021,7 @@ fn gen_method(
             .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
             .collect();
         let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
-        body_lines.push(format!(
-            "(let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 {inner_call}))))]"
-        ));
-        body_lines.push("  (when @ok s))".to_string());
+        body_lines.push(format!("(dr/writeable-capture-when (fn [w__] {inner_call}))"));
     } else if is_write {
         let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
             .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })

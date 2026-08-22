@@ -10,14 +10,15 @@
 
 (ffi/defcfn ^:private c-create "jolt_rx_Regex_create_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-create-result "jolt_sizeof_rx_Regex_create_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-create "jolt_offsetof_rx_Regex_create_mv1_result_is_ok" [] :int)
 (defn create [pattern]
-  (let [sz (c-sizeof-create-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-create-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-create)]
     (try
       (c-create pattern (count pattern) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
          {:ok? true :value (->Regex (ffi/read out :pointer 0) false)}
-         {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) true)})
+         {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) false)})
        "Regex/create" regex-error/message)
       (finally (ffi/free out))))
 )
@@ -29,8 +30,7 @@
 
 (ffi/defcfn ^:private c-find "jolt_rx_Regex_find_mv1" [:pointer :string :size_t :pointer] :int)
 (defn find [self text]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-find (:ptr self) text (count text) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-find (:ptr self) text (count text) w__)))
 )
 
 (ffi/defcfn ^:private c-replace-all "jolt_rx_Regex_replace_all_mv1" [:pointer :string :size_t :string :size_t :pointer] :void)

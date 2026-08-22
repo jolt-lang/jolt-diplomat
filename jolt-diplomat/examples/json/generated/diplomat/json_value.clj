@@ -11,14 +11,15 @@
 
 (ffi/defcfn ^:private c-parse "jolt_json_JsonValue_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_json_JsonValue_parse_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_json_JsonValue_parse_mv1_result_is_ok" [] :int)
 (defn parse [text]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
     (try
       (c-parse text (count text) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
          {:ok? true :value (->JsonValue (ffi/read out :pointer 0) false)}
-         {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) true)})
+         {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) false)})
        "JsonValue/parse" json-error/message)
       (finally (ffi/free out))))
 )
@@ -48,8 +49,7 @@
 
 (ffi/defcfn ^:private c-as-str "jolt_json_JsonValue_as_str_mv1" [:pointer :pointer] :int)
 (defn as-str [self]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-as-str (:ptr self) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-as-str (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-array-len "jolt_json_JsonValue_array_len_mv1" [:pointer :pointer :pointer] :void)
@@ -66,8 +66,7 @@
 
 (ffi/defcfn ^:private c-object-get "jolt_json_JsonValue_object_get_mv1" [:pointer :string :size_t :pointer] :int)
 (defn object-get [self key]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-object-get (:ptr self) key (count key) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-object-get (:ptr self) key (count key) w__)))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_json_JsonValue_to_string_mv1" [:pointer :pointer] :void)

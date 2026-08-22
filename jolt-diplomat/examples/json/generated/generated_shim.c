@@ -19,6 +19,7 @@ void jolt_json_JsonValue_parse_mv1(const char* text_data, size_t text_len, void*
 }
 
 size_t jolt_sizeof_json_JsonValue_parse_mv1_result(void) { return sizeof(json_JsonValue_parse_mv1_result); }
+size_t jolt_offsetof_json_JsonValue_parse_mv1_result_is_ok(void) { return offsetof(json_JsonValue_parse_mv1_result, is_ok); }
 JsonKind jolt_json_JsonValue_kind_mv1(const JsonValue* self) {
     return json_JsonValue_kind_mv1(self);
 }

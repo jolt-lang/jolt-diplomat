@@ -24,6 +24,7 @@ void jolt_b64_Codec_decode_mv1(const Codec* self, const char* input_data, size_t
 }
 
 size_t jolt_sizeof_b64_Codec_decode_mv1_result(void) { return sizeof(b64_Codec_decode_mv1_result); }
+size_t jolt_offsetof_b64_Codec_decode_mv1_result_is_ok(void) { return offsetof(b64_Codec_decode_mv1_result, is_ok); }
 void jolt_b64_Hex_encode_mv1(const uint8_t* input_data, size_t input_len, DiplomatWrite* write) {
     b64_Hex_encode_mv1((DiplomatU8View){ .data = input_data, .len = input_len }, write);
 }
@@ -34,3 +35,4 @@ void jolt_b64_Hex_decode_mv1(const char* input_data, size_t input_len, DiplomatW
 }
 
 size_t jolt_sizeof_b64_Hex_decode_mv1_result(void) { return sizeof(b64_Hex_decode_mv1_result); }
+size_t jolt_offsetof_b64_Hex_decode_mv1_result_is_ok(void) { return offsetof(b64_Hex_decode_mv1_result, is_ok); }

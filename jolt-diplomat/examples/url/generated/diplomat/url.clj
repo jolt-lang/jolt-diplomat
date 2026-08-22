@@ -10,14 +10,15 @@
 
 (ffi/defcfn ^:private c-parse "jolt_url_Url_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_url_Url_parse_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_url_Url_parse_mv1_result_is_ok" [] :int)
 (defn parse [input]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
     (try
       (c-parse input (count input) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
          {:ok? true :value (->Url (ffi/read out :pointer 0) false)}
-         {:ok? false :error (url-error/->UrlError (ffi/read out :pointer 0) true)})
+         {:ok? false :error (url-error/->UrlError (ffi/read out :pointer 0) false)})
        "Url/parse" url-error/message)
       (finally (ffi/free out))))
 )
@@ -29,8 +30,7 @@
 
 (ffi/defcfn ^:private c-host "jolt_url_Url_host_mv1" [:pointer :pointer] :int)
 (defn host [self]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-host (:ptr self) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-host (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-path "jolt_url_Url_path_mv1" [:pointer :pointer] :void)
@@ -40,8 +40,7 @@
 
 (ffi/defcfn ^:private c-query "jolt_url_Url_query_mv1" [:pointer :pointer] :int)
 (defn query [self]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-query (:ptr self) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-query (:ptr self) w__)))
 )
 
 (ffi/defcfn ^:private c-port "jolt_url_Url_port_mv1" [:pointer :pointer :pointer] :void)

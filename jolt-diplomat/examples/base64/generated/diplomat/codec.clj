@@ -23,14 +23,15 @@
 
 (ffi/defcfn ^:private c-decode "jolt_b64_Codec_decode_mv1" [:pointer :string :size_t :pointer :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-decode-result "jolt_sizeof_b64_Codec_decode_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-decode "jolt_offsetof_b64_Codec_decode_mv1_result_is_ok" [] :int)
 (defn decode [self input]
-  (let [sz (c-sizeof-decode-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-decode-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-decode)]
     (try
       (let [s (dr/writeable-capture (fn [w__] (c-decode (:ptr self) input (count input) w__ out)))]
         (dr/unwrap-result!
-         (if (= 1 (ffi/read out :uint8 8))
+         (if (= 1 (ffi/read out :uint8 is-ok-off))
            {:ok? true :value s}
-           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) true)})
+           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) false)})
              "Codec/decode" base64-error/message)
       )
       (finally (ffi/free out))))

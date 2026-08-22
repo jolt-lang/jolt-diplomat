@@ -15,6 +15,7 @@ void jolt_url_Url_parse_mv1(const char* input_data, size_t input_len, void* out)
 }
 
 size_t jolt_sizeof_url_Url_parse_mv1_result(void) { return sizeof(url_Url_parse_mv1_result); }
+size_t jolt_offsetof_url_Url_parse_mv1_result_is_ok(void) { return offsetof(url_Url_parse_mv1_result, is_ok); }
 void jolt_url_Url_scheme_mv1(const Url* self, DiplomatWrite* write) {
     url_Url_scheme_mv1(self, write);
 }

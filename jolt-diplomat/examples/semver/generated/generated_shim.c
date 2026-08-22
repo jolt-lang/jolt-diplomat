@@ -20,6 +20,7 @@ void jolt_sv_Version_parse_mv1(const char* text_data, size_t text_len, void* out
 }
 
 size_t jolt_sizeof_sv_Version_parse_mv1_result(void) { return sizeof(sv_Version_parse_mv1_result); }
+size_t jolt_offsetof_sv_Version_parse_mv1_result_is_ok(void) { return offsetof(sv_Version_parse_mv1_result, is_ok); }
 void jolt_sv_Version_to_string_mv1(const Version* self, DiplomatWrite* write) {
     sv_Version_to_string_mv1(self, write);
 }
@@ -35,6 +36,7 @@ void jolt_sv_VersionReq_parse_mv1(const char* text_data, size_t text_len, void* 
 }
 
 size_t jolt_sizeof_sv_VersionReq_parse_mv1_result(void) { return sizeof(sv_VersionReq_parse_mv1_result); }
+size_t jolt_offsetof_sv_VersionReq_parse_mv1_result_is_ok(void) { return offsetof(sv_VersionReq_parse_mv1_result, is_ok); }
 bool jolt_sv_VersionReq_matches_mv1(const VersionReq* self, const Version* version) {
     return sv_VersionReq_matches_mv1(self, version);
 }

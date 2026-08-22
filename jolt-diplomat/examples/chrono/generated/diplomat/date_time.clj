@@ -13,14 +13,15 @@
 
 (ffi/defcfn ^:private c-parse "jolt_chrono_DateTime_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_chrono_DateTime_parse_mv1_result" [] :int)
+(ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_chrono_DateTime_parse_mv1_result_is_ok" [] :int)
 (defn parse [s]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz)]
+  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
     (try
       (c-parse s (count s) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8))
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
          {:ok? true :value (->DateTime (ffi/read out :pointer 0) false)}
-         {:ok? false :error (date-time-error/->DateTimeError (ffi/read out :pointer 0) true)})
+         {:ok? false :error (date-time-error/->DateTimeError (ffi/read out :pointer 0) false)})
        "DateTime/parse" date-time-error/message)
       (finally (ffi/free out))))
 )
@@ -35,8 +36,7 @@
 
 (ffi/defcfn ^:private c-format "jolt_chrono_DateTime_format_mv1" [:pointer :string :size_t :pointer] :int)
 (defn format [self fmt]
-  (let [ok (atom false) s (dr/writeable-capture (fn [w__] (reset! ok (not= 0 (c-format (:ptr self) fmt (count fmt) w__)))))]
-    (when @ok s))
+  (dr/writeable-capture-when (fn [w__] (c-format (:ptr self) fmt (count fmt) w__)))
 )
 
 (ffi/defcfn ^:private c-timestamp-secs "chrono_DateTime_timestamp_secs_mv1" [:pointer] :int64)

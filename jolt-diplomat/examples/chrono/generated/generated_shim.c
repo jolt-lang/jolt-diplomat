@@ -15,6 +15,7 @@ void jolt_chrono_DateTime_parse_mv1(const char* s_data, size_t s_len, void* out)
 }
 
 size_t jolt_sizeof_chrono_DateTime_parse_mv1_result(void) { return sizeof(chrono_DateTime_parse_mv1_result); }
+size_t jolt_offsetof_chrono_DateTime_parse_mv1_result_is_ok(void) { return offsetof(chrono_DateTime_parse_mv1_result, is_ok); }
 void jolt_chrono_DateTime_to_rfc3339_mv1(const DateTime* self, DiplomatWrite* write) {
     chrono_DateTime_to_rfc3339_mv1(self, write);
 }
