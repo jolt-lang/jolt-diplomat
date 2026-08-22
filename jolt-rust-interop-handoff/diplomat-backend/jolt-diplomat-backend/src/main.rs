@@ -314,6 +314,69 @@ fn build_c_literal(shape: &FieldShape, flat_prefix: &str) -> String {
     }
 }
 
+/// Compute C struct field offsets (byte offset, jolt type keyword) for a list of
+/// FieldShapes. Only handles flat primitive/enum leaves — nested structs recurse.
+/// Returns (total_size, Vec<(field_kebab_name, offset, jolt_ty)>).
+fn compute_struct_offsets(fields: &[(String, FieldShape)]) -> (usize, Vec<(String, usize, String)>) {
+    let mut offset = 0usize;
+    let mut result = vec![];
+    for (fname, shape) in fields {
+        let (jolt_ty, size, align) = match shape {
+            FieldShape::Prim { jolt_ty, c_ty, .. } => {
+                let sz = match c_ty.as_str() {
+                    "bool" | "uint8_t" | "int8_t" => (1usize, 1usize),
+                    "uint16_t" | "int16_t" => (2, 2),
+                    "uint32_t" | "int32_t" | "char32_t" => (4, 4),
+                    "uint64_t" | "int64_t" | "size_t" | "ssize_t" | "double" => (8, 8),
+                    "float" => (4, 4),
+                    _ => (8, 8), // conservative fallback
+                };
+                // bool → :uint8; u16/i16 → :u16 (dr/read-u16 helper, no native 16-bit read)
+                let read_ty = match c_ty.as_str() {
+                    "bool" => ":uint8".to_string(),
+                    "uint16_t" | "int16_t" => ":u16".to_string(),
+                    _ => jolt_ty.clone(),
+                };
+                (read_ty, sz.0, sz.1)
+            }
+            FieldShape::EnumField { .. } => (":int".to_string(), 4, 4),
+            // Nested struct: recurse and treat as a block.
+            FieldShape::Nested { fields: sub_fields, .. } => {
+                let (sub_size, sub_items) = compute_struct_offsets(sub_fields);
+                let sub_align = sub_items.iter().map(|(_, _, jt)| field_align(jt)).max().unwrap_or(1);
+                offset = align_up(offset, sub_align);
+                for (sub_name, sub_off, sub_jt) in sub_items {
+                    result.push((format!("{}-{}", to_kebab(fname), sub_name), offset + sub_off, sub_jt));
+                }
+                offset += sub_size;
+                continue;
+            }
+            _ => (":int".to_string(), 4, 4), // OptionPrim/OptionEnum — skip for now
+        };
+        offset = align_up(offset, align);
+        result.push((to_kebab(fname), offset, jolt_ty));
+        offset += size;
+    }
+    // Total size padded to max field alignment.
+    let max_align = result.iter().map(|(_, _, jt)| field_align(jt)).max().unwrap_or(1);
+    let total = align_up(offset, max_align);
+    (total, result)
+}
+
+fn field_align(jolt_ty: &str) -> usize {
+    match jolt_ty {
+        ":uint8" => 1,
+        ":u16" => 2,
+        ":uint" | ":int" => 4,
+        ":uint64" | ":int64" | ":size_t" | ":ssize_t" | ":double" | ":pointer" => 8,
+        _ => 4,
+    }
+}
+
+fn align_up(offset: usize, align: usize) -> usize {
+    (offset + align - 1) & !(align - 1)
+}
+
 fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut String) -> String {
     let name = op.name.as_str();
     let mut body = String::new();
@@ -375,7 +438,8 @@ fn gen_method(
             ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _) |
             ReturnType::Nullable(_) |
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(_))) |
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_)))));
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_))) |
+            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(_)))));
 
     if !needs_shim {
         // Direct defcfn — only primitives in params and a simple return.
@@ -714,16 +778,45 @@ fn gen_method(
         } else { None }
     } else { None };
 
+    // Infallible(OutType(Struct)): real fn returns struct by value.
+    // Shim takes void* out, writes memcpy(out, &r, sizeof(r)).
+    // Jolt allocs sizeof, calls shim, reads each field at its computed offset.
+    // Field offsets computed by C alignment rules from the HIR field types.
+    let struct_return: Option<(String, Vec<(String, FieldShape)>)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
+        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(sp))) = &m.output {
+            let sd = match sp.id() {
+                hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
+                other => {
+                    eprintln!("skipped {owner}::{} (struct return TypeId {other:?})", m.name);
+                    return false;
+                }
+            };
+            let mut fields = vec![];
+            let mut ok = true;
+            for f in &sd.fields {
+                match resolve_field_shape(tcx, &f.ty, extra_requires) {
+                    Ok(shape) => fields.push((f.name.as_str().to_string(), shape)),
+                    Err(e) => {
+                        eprintln!("skipped {owner}::{} (struct return field {}: {e})", m.name, f.name);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok { Some((sd.name.as_str().to_string(), fields)) } else { None }
+        } else { None }
+    } else { None };
+
     // Nullable(OutType(Primitive(_))): real fn returns OptionX { T ok; bool is_ok; }.
     // Shim decomposes to (T* out_val, bool* out_is_ok); Jolt reads is_ok to decide nil vs value.
-    let nullable_prim_return: Option<(&'static str, &'static str)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
+    let nullable_prim_return: Option<(&'static str, &'static str)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && struct_return.is_none() {
         if let ReturnType::Nullable(SuccessType::OutType(hir::OutType::Primitive(p))) = &m.output {
             let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
             Some((jolt_ty, c_ty))
         } else { None }
     } else { None };
 
-    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && nullable_prim_return.is_none() {
+    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && struct_return.is_none() && nullable_prim_return.is_none() {
         match &m.output {
             ReturnType::Infallible(SuccessType::Unit) => Some("void"),
             ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
@@ -768,6 +861,11 @@ fn gen_method(
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-is-ok".into(), public_name: None });
     }
 
+    if let Some((ref struct_name, _)) = struct_return {
+        c_params.push(format!("{struct_name}* out"));
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
+    }
+
     // Nullable(Write) C ABI: {abi_name}_result { bool is_ok } returned by value.
     // Our shim returns int (0=none, 1=wrote) so Jolt can check it.
     // We need the result_ty string; compute it now.
@@ -779,7 +877,7 @@ fn gen_method(
         ename.as_str()
     } else if is_nullable_write {
         "int"
-    } else if borrowed_slice_return.is_some() || nullable_prim_return.is_some() {
+    } else if borrowed_slice_return.is_some() || nullable_prim_return.is_some() || struct_return.is_some() {
         "void"
     } else {
         match plain_return {
@@ -796,6 +894,10 @@ fn gen_method(
         let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
         let _ = writeln!(shim_c, "    *out_val = ({c_ty})r.ok;");
         let _ = writeln!(shim_c, "    *out_is_ok = r.is_ok;");
+    } else if let Some((ref struct_name, _)) = struct_return {
+        // Struct return by value: shim writes memcpy(out, &r, sizeof(r)).
+        let _ = writeln!(shim_c, "    {struct_name} r = {real_call};");
+        let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
     } else if let Some((_, ref c_ty)) = borrowed_slice_return {
         // DiplomatXView { data, size } — decompose to out params.
         let view_prim = if c_ty == "size_t" {
@@ -829,7 +931,7 @@ fn gen_method(
     let _ = writeln!(shim_c, "}}");
     let _ = writeln!(shim_c);
 
-    let clj_ret_ty = if borrowed_slice_return.is_some() {
+    let clj_ret_ty = if borrowed_slice_return.is_some() || struct_return.is_some() || nullable_prim_return.is_some() {
         ":void"
     } else if enum_return.is_some() {
         ":int"
@@ -855,6 +957,36 @@ fn gen_method(
 
     let shim_arg_types: Vec<String> = arg_specs.iter().map(|a| a.clj_type.clone()).collect();
     let shim_call_exprs: Vec<String> = arg_specs.iter().map(|a| a.call_expr.clone()).collect();
+
+    // Emit sizeof helper for struct returns before the main defcfn.
+    if let Some((ref struct_name, ref fields)) = struct_return {
+        let sizeof_sym = format!("jolt_sizeof_{}_mv1", to_snake(struct_name));
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{}-struct \"{sizeof_sym}\" [] :int)",
+            to_kebab(struct_name));
+        let _ = writeln!(shim_c, "size_t {sizeof_sym}(void) {{ return sizeof({struct_name}); }}");
+        // Precompute field reads for the body.
+        let (_, field_reads) = compute_struct_offsets(fields);
+        let reads: Vec<String> = field_reads.iter()
+            .map(|(fname, off, jt)| {
+                let read_expr = if jt == ":u16" {
+                    format!("(dr/read-u16 out {off})")
+                } else {
+                    format!("(ffi/read out {jt} {off})")
+                };
+                format!(":{fname} {read_expr}")
+            })
+            .collect();
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
+            shim_arg_types.join(" "));
+        let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
+        let _ = writeln!(out, "  (let [sz (c-sizeof-{}-struct) out (ffi/alloc sz)]", to_kebab(struct_name));
+        let _ = writeln!(out, "    (try");
+        let _ = writeln!(out, "      (c-{fn_name} {})", shim_call_exprs.join(" "));
+        let _ = writeln!(out, "      {{{}}} ", reads.join(" "));
+        let _ = writeln!(out, "      (finally (ffi/free out)))))");
+        let _ = writeln!(out);
+        return true;
+    }
 
     let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
         shim_arg_types.join(" "));

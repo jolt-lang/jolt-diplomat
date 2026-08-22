@@ -66,6 +66,33 @@
        ~@body
        (finally (close! ~binding)))))
 
+(defmacro when-opaque
+  "Like with-opaque but skips body and returns nil when the opaque value is
+  nil — useful for optional return values like array-get on an out-of-bounds
+  index, where the caller would otherwise need a manual nil-guard around
+  with-opaque."
+  [[binding ctor] & body]
+  `(let [~binding ~ctor]
+     (if (nil? ~binding)
+       nil
+       (try
+         ~@body
+         (finally (close! ~binding))))))
+
+(defmacro load!
+  "Load the Rust cdylib and its generated shim dylib for a Diplomat-bound
+  crate. lib-name is the snake_case name from [lib] name in Cargo.toml
+  (e.g. \"json_capi\"). demo-dir is the directory containing both
+  lib{lib-name}.dylib (under {lib-name}/target/release/) and
+  lib{lib-name}_shim.dylib.
+
+  Example:
+    (dr/load! \"/path/to/json-demo\" \"json_capi\")"
+  [demo-dir lib-name]
+  `(do
+     (ffi/load-library (str ~demo-dir "/" ~lib-name "/target/release/lib" ~lib-name ".dylib"))
+     (ffi/load-library (str ~demo-dir "/lib" ~lib-name "_shim.dylib"))))
+
 (defmacro with-primitive-buffer
   "Marshals a Clojure seq of numbers to a temp C buffer of the given
   jolt.ffi element type (elem-type), for the scope of body, freeing it
@@ -210,6 +237,13 @@
 ;; Struct-by-value — generated offset table drives read/write, replacing
 ;; the native-interop guide's "write the layout out by hand" pattern.
 ;; -----------------------------------------------------------------------
+
+(defn read-u16
+  "Read a little-endian uint16 from ptr at byte offset. Jolt ffi has no
+  16-bit read type, so we combine two uint8 reads."
+  [ptr offset]
+  (bit-or (ffi/read ptr :uint8 offset)
+          (bit-shift-left (ffi/read ptr :uint8 (+ offset 1)) 8)))
 
 (defn struct->ptr
   "field-offsets: {:field-name [byte-offset ffi-type]}, generated per-type

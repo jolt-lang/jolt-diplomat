@@ -4,6 +4,12 @@ mod ffi {
     use diplomat_runtime::DiplomatWrite;
     use std::fmt::Write as _;
 
+    pub struct UrlInfo {
+        pub port: u16,
+        pub has_port: bool,
+        pub path_len: u32,
+    }
+
     #[diplomat::opaque]
     pub struct Url(url::Url);
 
@@ -49,6 +55,14 @@ mod ffi {
 
         pub fn to_string(&self, write: &mut DiplomatWrite) {
             let _ = write.write_str(self.0.as_str());
+        }
+
+        pub fn info(&self) -> UrlInfo {
+            UrlInfo {
+                port: self.0.port().unwrap_or(0),
+                has_port: self.0.port().is_some(),
+                path_len: self.0.path().len() as u32,
+            }
         }
     }
 }

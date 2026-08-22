@@ -43,6 +43,12 @@ void jolt_url_Url_to_string_mv1(const Url* self, DiplomatWrite* write) {
     return url_Url_to_string_mv1(self, write);
 }
 
+void jolt_url_Url_info_mv1(const Url* self, UrlInfo* out) {
+    UrlInfo r = url_Url_info_mv1(self);
+    memcpy(out, &r, sizeof(r));
+}
+
+size_t jolt_sizeof_url_info_mv1(void) { return sizeof(UrlInfo); }
 void jolt_url_UrlError_message_mv1(const UrlError* self, DiplomatWrite* write) {
     return url_UrlError_message_mv1(self, write);
 }

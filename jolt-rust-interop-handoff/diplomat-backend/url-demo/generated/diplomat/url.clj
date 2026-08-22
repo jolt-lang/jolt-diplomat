@@ -81,3 +81,12 @@
       (finally (ffi/free buf) (ffi/free w))))
 )
 
+(ffi/defcfn ^:private c-sizeof-url-info-struct "jolt_sizeof_url_info_mv1" [] :int)
+(ffi/defcfn ^:private c-info "jolt_url_Url_info_mv1" [:pointer :pointer] :void)
+(defn info [self]
+  (let [sz (c-sizeof-url-info-struct) out (ffi/alloc sz)]
+    (try
+      (c-info (:ptr self) out)
+      {:port (dr/read-u16 out 0) :has-port (ffi/read out :uint8 2) :path-len (ffi/read out :uint 4)} 
+      (finally (ffi/free out)))))
+

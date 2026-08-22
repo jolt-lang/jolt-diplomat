@@ -3,10 +3,9 @@
 (def demo-dir "/Users/andrzejfricze/rust-jolt/jolt-rust-interop-handoff/diplomat-backend/json-demo")
 
 (require '[jolt.ffi :as ffi])
-(ffi/load-library (str demo-dir "/json-capi/target/release/libjson_capi.dylib"))
-(ffi/load-library (str demo-dir "/libjson_capi_shim.dylib"))
-
 (require '[diplomat.runtime :as dr])
+(dr/load! demo-dir "json_capi")
+
 (require '[diplomat.json-value :as jv])
 (require '[diplomat.json-kind :as jk])
 
@@ -29,9 +28,10 @@
   ;; array navigation
   (dr/with-opaque [v (jv/parse "[10, 20, 30]")]
     (println "array len:" (jv/array-len v))
-    (dr/with-opaque [el (jv/array-get v 1)]
+    (dr/when-opaque [el (jv/array-get v 1)]
       (println "array[1]:" (jv/as-f64 el)))
-    (println "array[99] (out of bounds):" (jv/array-get v 99)))
+    (println "array[99] nil?:" (dr/when-opaque [el (jv/array-get v 99)]
+                                 (jv/as-f64 el))))
 
   ;; object access
   (dr/with-opaque [v (jv/parse "{\"name\":\"Alice\",\"age\":30}")]

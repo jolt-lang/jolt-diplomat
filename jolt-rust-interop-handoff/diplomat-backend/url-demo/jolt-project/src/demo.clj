@@ -18,7 +18,9 @@
     (println "path:"   (String. (u/path url)))
     (println "query:"  (some-> (u/query url) String.))
     (println "port:"   (u/port url))
-    (println "full:"   (String. (u/to-string url))))
+    (println "full:"   (String. (u/to-string url)))
+    (let [info (u/info url)]
+      (println "info struct:" info)))
 
   ;; no query, no port
   (dr/with-opaque [url (u/parse "https://example.com/no-query")]

@@ -8,6 +8,7 @@
 #include "diplomat_runtime.h"
 
 #include "UrlError.d.h"
+#include "UrlInfo.d.h"
 
 #include "Url.d.h"
 
@@ -33,6 +34,8 @@ typedef struct url_Url_port_mv1_result {union {uint16_t ok; }; bool is_ok;} url_
 url_Url_port_mv1_result url_Url_port_mv1(const Url* self);
 
 void url_Url_to_string_mv1(const Url* self, DiplomatWrite* write);
+
+UrlInfo url_Url_info_mv1(const Url* self);
 
 void url_Url_destroy_mv1(Url* self);
 

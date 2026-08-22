@@ -143,5 +143,10 @@ pub mod ffi {
         pub fn double(&self) -> Box<Doubled> {
             Box::new(Doubled(self.0 as u16 * 2))
         }
+
+        /// Struct return by value — exercises the "struct return" generator gap.
+        pub fn get_point(&self) -> Point {
+            Point { x: self.0 as f64, y: self.0 as f64 * 2.0 }
+        }
     }
 }
