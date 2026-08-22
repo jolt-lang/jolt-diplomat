@@ -139,9 +139,72 @@ Outputs: `generated/diplomat/*.clj`, `generated/generated_shim.c`, `libmy_capi_s
   (println (mt/value x)))
 ```
 
+## Running the examples
+
+### Prerequisites
+
+**Rust toolchain**
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**diplomat-tool** (must be 0.14–0.15; 0.16+ changes the HIR and is not yet supported)
+```bash
+cargo install diplomat-tool --version "^0.15"
+```
+
+**Jolt** v0.7+  
+Follow the [Jolt install guide](https://jolt-lang.net/docs/install.html). Verify with:
+```bash
+jolt --version   # should print v0.7.x or later
+```
+
+**C compiler** — on macOS install Xcode Command Line Tools if not already present:
+```bash
+xcode-select --install
+```
+
+### Build an example
+
+Each example ships with pre-generated bindings and a pre-compiled shim dylib, so for a quick run you only need Jolt:
+
+```bash
+cd examples/chrono/jolt-project
+jolt run -m demo
+```
+
+To rebuild from source (e.g. after modifying the Rust crate):
+
+```bash
+cd examples/chrono
+bash build.sh          # runs the full pipeline: cargo → diplomat-tool → generator → cc
+cd jolt-project
+jolt run -m demo
+```
+
+### All examples at once
+
+```bash
+for demo in url regex semver base64 json chrono; do
+  echo "=== $demo ==="
+  (cd examples/$demo/jolt-project && jolt run -m demo)
+done
+```
+
+### What each example demonstrates
+
+| Example | Rust crate | Key ABI shapes |
+|---|---|---|
+| `url` | [`url`](https://crates.io/crates/url) | fallible ctor, `Option<u16>` return, struct return |
+| `regex` | [`regex`](https://crates.io/crates/regex) | nullable write, opaque error type |
+| `semver` | [`semver`](https://crates.io/crates/semver) | cross-opaque method params |
+| `base64` | [`base64` + `hex`](https://crates.io/crates/base64) | `&[u8]` slice params |
+| `json` | [`serde_json`](https://crates.io/crates/serde_json) | nullable opaque return, enum return |
+| `chrono` | [`chrono`](https://crates.io/crates/chrono) | struct return with mixed field types, nullable opaque |
+
 ## Requirements
 
 - Rust + Cargo
-- [`diplomat-tool`](https://github.com/rust-diplomat/diplomat) (`cargo install diplomat-tool`)
+- `diplomat-tool` 0.14–0.15 (`cargo install diplomat-tool --version "^0.15"`)
 - [Jolt](https://jolt-lang.net) v0.7+
 - `cc` (Xcode CLT on macOS)
