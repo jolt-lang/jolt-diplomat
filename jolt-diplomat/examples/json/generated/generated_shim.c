@@ -10,7 +10,7 @@ void jolt_diplomat_simple_write(char* buf, size_t buf_size, void* out) {
 }
 
 void jolt_json_JsonError_message_mv1(const JsonError* self, DiplomatWrite* write) {
-    return json_JsonError_message_mv1(self, write);
+    json_JsonError_message_mv1(self, write);
 }
 
 void jolt_json_JsonValue_parse_mv1(const char* text_data, size_t text_len, void* out) {
@@ -52,6 +52,6 @@ int jolt_json_JsonValue_object_get_mv1(const JsonValue* self, const char* key_da
 }
 
 void jolt_json_JsonValue_to_string_mv1(const JsonValue* self, DiplomatWrite* write) {
-    return json_JsonValue_to_string_mv1(self, write);
+    json_JsonValue_to_string_mv1(self, write);
 }
 

@@ -11,11 +11,11 @@ void jolt_diplomat_simple_write(char* buf, size_t buf_size, void* out) {
 }
 
 void jolt_b64_Base64Error_message_mv1(const Base64Error* self, DiplomatWrite* write) {
-    return b64_Base64Error_message_mv1(self, write);
+    b64_Base64Error_message_mv1(self, write);
 }
 
 void jolt_b64_Codec_encode_mv1(const Codec* self, const uint8_t* input_data, size_t input_len, DiplomatWrite* write) {
-    return b64_Codec_encode_mv1(self, (DiplomatU8View){ .data = input_data, .len = input_len }, write);
+    b64_Codec_encode_mv1(self, (DiplomatU8View){ .data = input_data, .len = input_len }, write);
 }
 
 void jolt_b64_Codec_decode_mv1(const Codec* self, const char* input_data, size_t input_len, DiplomatWrite* write, void* out) {
@@ -25,7 +25,7 @@ void jolt_b64_Codec_decode_mv1(const Codec* self, const char* input_data, size_t
 
 size_t jolt_sizeof_b64_Codec_decode_mv1_result(void) { return sizeof(b64_Codec_decode_mv1_result); }
 void jolt_b64_Hex_encode_mv1(const uint8_t* input_data, size_t input_len, DiplomatWrite* write) {
-    return b64_Hex_encode_mv1((DiplomatU8View){ .data = input_data, .len = input_len }, write);
+    b64_Hex_encode_mv1((DiplomatU8View){ .data = input_data, .len = input_len }, write);
 }
 
 void jolt_b64_Hex_decode_mv1(const char* input_data, size_t input_len, DiplomatWrite* write, void* out) {

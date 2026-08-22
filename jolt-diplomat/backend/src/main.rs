@@ -90,6 +90,25 @@ fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
     }
 }
 
+/// Map a C type name back to the Jolt ffi keyword for that type.
+/// Used where we have a C type string (from shim generation) and need
+/// the Jolt side — avoids a second hand-coded table that could drift from
+/// prim_to_jolt_and_c.
+fn c_ty_to_jolt_kw(c_ty: &str) -> &'static str {
+    match c_ty {
+        "uint8_t" => ":uint8",
+        "uint16_t" | "uint32_t" | "char32_t" => ":uint",
+        "int8_t" | "int16_t" | "int32_t" | "bool" => ":int",
+        "int64_t" => ":int64",
+        "uint64_t" => ":uint64",
+        "size_t" => ":size_t",
+        "ssize_t" => ":ssize_t",
+        "double" | "float" => ":double",
+        "void*" => ":pointer",
+        _ => panic!("jolt-diplomat-backend: no jolt keyword for C type {c_ty}"),
+    }
+}
+
 fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
     match p {
         PrimitiveType::Bool => "Bool",
@@ -107,6 +126,17 @@ fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
         PrimitiveType::Float(hir::FloatType::F32) => "F32",
         PrimitiveType::Char => "Char",
         other => panic!("jolt-diplomat-backend: no DiplomatXView mapping for {other:?}"),
+    }
+}
+
+/// Emit `(->{Target} call owns?)`, qualifying with the alias when Target != owner.
+fn emit_opaque_wrap(target: &str, owner: &str, call: &str, owns: bool) -> String {
+    let owns_str = if owns { "true" } else { "false" };
+    if target != owner {
+        let alias = to_kebab(target);
+        format!("({alias}/->{target} {call} {owns_str})")
+    } else {
+        format!("(->{target} {call} {owns_str})")
     }
 }
 
@@ -196,6 +226,7 @@ fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
 
 // A struct field's shape — either a primitive leaf, an enum leaf,
 // an Option<primitive/enum> leaf, or a nested struct.
+#[allow(dead_code)]
 enum FieldShape {
     Prim { jolt_ty: String, c_ty: String, is_bool: bool },
     EnumField { c_ty: String, enum_alias: String },
@@ -403,6 +434,101 @@ fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut Stri
     out
 }
 
+/// Classify the return type of a method into one unambiguous variant.
+/// Computed once, replaces the chain of successive Option guards.
+enum ReturnKind {
+    Unit,
+    Write,
+    NullableWrite,
+    Fallible { is_write: bool },
+    BorrowedSlice { jolt_ty: &'static str, c_ty: &'static str },
+    StructReturn { name: String, fields: Vec<(String, FieldShape)> },
+    NullablePrim { jolt_ty: &'static str, c_ty: &'static str },
+    Enum { name: String, alias: String },
+    NullableOpaque { target: String },
+    Opaque { target: String },
+    PlainPrim { c_ty: &'static str },
+}
+
+fn classify_return(
+    tcx: &hir::TypeContext,
+    owner: &str,
+    m: &hir::Method,
+    extra_requires: &mut std::collections::BTreeSet<String>,
+) -> Option<ReturnKind> {
+    match &m.output {
+        ReturnType::Infallible(SuccessType::Unit) => Some(ReturnKind::Unit),
+
+        ReturnType::Infallible(SuccessType::Write) => Some(ReturnKind::Write),
+
+        ReturnType::Nullable(SuccessType::Write) => Some(ReturnKind::NullableWrite),
+
+        ReturnType::Fallible(st, _) => Some(ReturnKind::Fallible {
+            is_write: matches!(st, SuccessType::Write),
+        }),
+
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(
+            hir::Slice::Primitive(_, prim)
+        ))) => {
+            let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
+            Some(ReturnKind::BorrowedSlice { jolt_ty, c_ty })
+        }
+
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(sp))) => {
+            let sd = match sp.id() {
+                hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
+                other => {
+                    eprintln!("skipped {owner}::{} (struct return TypeId {other:?})", m.name);
+                    return None;
+                }
+            };
+            let mut fields = vec![];
+            for f in &sd.fields {
+                match resolve_field_shape(tcx, &f.ty, extra_requires) {
+                    Ok(shape) => fields.push((f.name.as_str().to_string(), shape)),
+                    Err(e) => {
+                        eprintln!("skipped {owner}::{} (struct return field {}: {e})", m.name, f.name);
+                        return None;
+                    }
+                }
+            }
+            Some(ReturnKind::StructReturn { name: sd.name.as_str().to_string(), fields })
+        }
+
+        ReturnType::Nullable(SuccessType::OutType(hir::OutType::Primitive(p))) => {
+            let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
+            Some(ReturnKind::NullablePrim { jolt_ty, c_ty })
+        }
+
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(ep))) => {
+            let ed = tcx.resolve_enum(ep.tcx_id);
+            let name = ed.name.as_str().to_string();
+            let alias = to_kebab(&name);
+            extra_requires.insert(name.clone());
+            Some(ReturnKind::Enum { name, alias })
+        }
+
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) => {
+            let target = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+            if target != owner { extra_requires.insert(target.clone()); }
+            if op.is_optional() {
+                Some(ReturnKind::NullableOpaque { target })
+            } else {
+                Some(ReturnKind::Opaque { target })
+            }
+        }
+
+        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
+            Some(ReturnKind::PlainPrim { c_ty: prim_to_jolt_and_c(p).1 })
+        }
+
+        other => {
+            eprintln!("skipped {owner}::{} (unsupported return {other:?})", m.name);
+            None
+        }
+    }
+}
+
 // Returns false if the method was skipped (unsupported shape).
 fn gen_method(
     tcx: &hir::TypeContext,
@@ -422,24 +548,17 @@ fn gen_method(
         return false;
     }
 
-    // Detect whether ANY crossing needs the shim.
-    // Option<Box<Opaque>>: HIR = Infallible(OutType(Opaque { optional: Yes })) → nullable pointer.
-    // No shim needed — direct path handles null check.
-    let is_nullable_opaque = matches!(&m.output,
-        ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) if op.is_optional());
+    let rk = match classify_return(tcx, owner, m, extra_requires) {
+        Some(r) => r,
+        None => return false,
+    };
 
     let needs_shim = m.params.iter().any(|p| matches!(
         p.ty,
         Type::Struct(_) | Type::Slice(_) | Type::Callback(_) | Type::Enum(_) |
         Type::Opaque(_) | Type::DiplomatOption(_)
-    ))
-        || matches!(m.output, ReturnType::Fallible(_, _))
-        || (!is_nullable_opaque && matches!(m.output,
-            ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _) |
-            ReturnType::Nullable(_) |
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(_))) |
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(_))) |
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(_)))));
+    )) || !matches!(rk, ReturnKind::Unit | ReturnKind::PlainPrim { .. }
+                          | ReturnKind::Opaque { .. } | ReturnKind::NullableOpaque { .. });
 
     if !needs_shim {
         // Direct defcfn — only primitives in params and a simple return.
@@ -462,53 +581,23 @@ fn gen_method(
             public_names.push(n.clone());
             call_exprs.push(n);
         }
-        // Option<Box<Opaque>>: Diplomat HIR = Infallible(OutType(Opaque { optional: Optional(true) })).
-        // C ABI is a nullable pointer (NULL = None). Direct path, no shim needed.
-        let nullable_opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
-            if op.is_optional() {
-                let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-                if target_name != owner { extra_requires.insert(target_name.clone()); }
-                Some(target_name)
-            } else { None }
-        } else { None };
-        let ret_ty = match &m.output {
-            ReturnType::Infallible(SuccessType::Unit) => ":void",
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => prim_to_jolt_and_c(p).0,
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(_))) => ":pointer",
-            other => {
-                eprintln!("skipped {owner}::{} (unsupported direct return {other:?})", m.name);
-                return false;
-            }
+        let ret_ty = match &rk {
+            ReturnKind::Unit => ":void",
+            ReturnKind::PlainPrim { c_ty } => c_ty_to_jolt_kw(c_ty),
+            ReturnKind::Opaque { .. } | ReturnKind::NullableOpaque { .. } => ":pointer",
+            _ => unreachable!(),
         };
-        let opaque_wrap: Option<String> = if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
-            if !op.is_optional() {
-                let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-                if target_name != owner { extra_requires.insert(target_name.clone()); }
-                Some(target_name)
-            } else { None }
-        } else { None };
         let c_sym = m.abi_name.to_string();
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty})",
             arg_types.join(" "));
         let call = format!("(c-{fn_name} {})", call_exprs.join(" "));
-        let body = if let Some(ref target) = nullable_opaque_wrap {
-            // Null pointer → nil; non-null → wrapped opaque (owns the allocation).
-            let wrap = if target != owner {
-                let alias = to_kebab(target);
-                format!("({alias}/->{target} p true)")
-            } else {
-                format!("(->{target} p true)")
-            };
-            format!("(let [p {call}] (when (not= 0 p) {wrap}))")
-        } else {
-            match &opaque_wrap {
-                Some(target) if target != owner => {
-                    let alias = to_kebab(target);
-                    format!("({alias}/->{target} {call} false)")
-                }
-                Some(target) => format!("(->{target} {call} false)"),
-                None => call,
+        let body = match &rk {
+            ReturnKind::NullableOpaque { target } => {
+                let wrap = emit_opaque_wrap(target, owner, "p", true);
+                format!("(let [p {call}] (when (not= 0 p) {wrap}))")
             }
+            ReturnKind::Opaque { target } => emit_opaque_wrap(target, owner, &call, false),
+            _ => call,
         };
         let _ = writeln!(out, "(defn {fn_name} [{}] {body})", public_names.join(" "));
         let _ = writeln!(out);
@@ -609,29 +698,16 @@ fn gen_method(
                 call_args.push(build_c_literal(&shape, &cname));
             }
             Type::DiplomatOption(inner) => {
-                // Option<T>: shim receives (T value, bool is_ok). Macro: OptionX {union{T ok;}; bool is_ok;}.
+                // Option<T>: shim receives (T value, bool is_ok).
                 // Jolt caller passes nil → is_ok=0, or the value → is_ok=1.
                 match inner.as_ref() {
                     Type::Primitive(prim) => {
-                        let (jolt_ty, _c_ty) = prim_to_jolt_and_c(prim);
+                        let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
                         let view_suffix = prim_to_diplomat_view_suffix(prim);
-                        // OptionU8, OptionI32, etc. — the macro name uses the suffix.
                         let opt_ty = format!("Option{view_suffix}");
-                        c_params.push(format!("{opt_ty} {cname}"));
-                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)"), public_name: Some(pname.clone()) });
-                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
-                        // Can't decompose to two args since C expects the struct; pass as single OptionX struct.
-                        // But shim receives it as a flat struct — we need to split anyway.
-                        // Use two C params and reconstruct: value + is_ok.
-                        // Actually easier: drop opt_ty approach and do two separate C params.
-                        // Rewrite to use two params matching how flat shim works:
-                        let _ = c_params.pop(); // undo the OptionX push
-                        let _ = arg_specs.pop(); // undo both pushes
-                        let _ = arg_specs.pop();
-                        let (jolt_ty2, c_ty2) = prim_to_jolt_and_c(prim);
-                        c_params.push(format!("{c_ty2} {cname}_value"));
+                        c_params.push(format!("{c_ty} {cname}_value"));
                         c_params.push(format!("bool {cname}_is_ok"));
-                        arg_specs.push(ArgSpec { clj_type: jolt_ty2.into(), call_expr: format!("(or {pname} 0)"), public_name: Some(pname.clone()) });
+                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)"), public_name: Some(pname.clone()) });
                         arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
                         call_args.push(format!("({opt_ty}){{ .ok = {cname}_value, .is_ok = {cname}_is_ok }}"));
                     }
@@ -640,7 +716,6 @@ fn gen_method(
                         let enum_name = ed.name.as_str().to_string();
                         let enum_alias = to_kebab(&enum_name);
                         extra_requires.insert(enum_name.clone());
-                        // Per-type headers define {EnumName}_option typedef.
                         let opt_ty = format!("{enum_name}_option");
                         c_params.push(format!("{enum_name} {cname}_value"));
                         c_params.push(format!("bool {cname}_is_ok"));
@@ -739,30 +814,17 @@ fn gen_method(
         public_params.push(to_kebab(p.name.as_str()));
     }
 
-    // Enum return — resolved to (C type name, enum alias) for int→kw conversion.
-    let enum_return: Option<(String, String)> = if !matches!(m.output, ReturnType::Fallible(_, _)) {
-        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Enum(ep))) = &m.output {
-            let ed = tcx.resolve_enum(ep.tcx_id);
-            let ename = ed.name.as_str().to_string();
-            let alias = to_kebab(&ename);
-            extra_requires.insert(ename.clone());
-            Some((ename, alias))
-        } else { None }
-    } else { None };
+    let is_write = matches!(rk, ReturnKind::Write | ReturnKind::Fallible { is_write: true });
+    let is_nullable_write = matches!(rk, ReturnKind::NullableWrite);
+    let out_ptr_needed = matches!(rk, ReturnKind::Fallible { .. });
 
-    let is_write = matches!(m.output, ReturnType::Infallible(SuccessType::Write) | ReturnType::Fallible(SuccessType::Write, _));
-    // Nullable(Write): Option<DiplomatWrite> — shim writes to out buffer; returns bool is_some.
-    let is_nullable_write = matches!(m.output, ReturnType::Nullable(SuccessType::Write));
     if is_write || is_nullable_write {
         c_params.push("DiplomatWrite* write".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "w".into(), public_name: None });
         call_args.push("write".to_string());
     }
 
-    let out_ptr_needed = matches!(m.output, ReturnType::Fallible(_, _));
-
-    // If the error type is an opaque, capture its name so we can read the error
-    // as a pointer and wrap it rather than treating it as a raw int.
+    // If the error type is an opaque, capture its name for message extraction.
     let opaque_error: Option<(String, String)> = if let ReturnType::Fallible(_, Some(Type::Opaque(ep))) = &m.output {
         let err_name = tcx.resolve_opaque(ep.tcx_id).name.as_str().to_string();
         let err_alias = to_kebab(&err_name);
@@ -770,201 +832,111 @@ fn gen_method(
         Some((err_name, err_alias))
     } else { None };
 
-    // Borrowed primitive slice return — shim decomposes to (data_ptr, len) via out param.
-    let borrowed_slice_return: Option<(String, String)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() {
-        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(hir::Slice::Primitive(_, prim)))) = &m.output {
-            let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
-            Some((jolt_ty.to_string(), c_ty.to_string()))
-        } else { None }
-    } else { None };
-
-    // Infallible(OutType(Struct)): real fn returns struct by value.
-    // Shim takes void* out, writes memcpy(out, &r, sizeof(r)).
-    // Jolt allocs sizeof, calls shim, reads each field at its computed offset.
-    // Field offsets computed by C alignment rules from the HIR field types.
-    let struct_return: Option<(String, Vec<(String, FieldShape)>)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() {
-        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(sp))) = &m.output {
-            let sd = match sp.id() {
-                hir::TypeId::Struct(sid) => tcx.resolve_struct(sid),
-                other => {
-                    eprintln!("skipped {owner}::{} (struct return TypeId {other:?})", m.name);
-                    return false;
-                }
-            };
-            let mut fields = vec![];
-            let mut ok = true;
-            for f in &sd.fields {
-                match resolve_field_shape(tcx, &f.ty, extra_requires) {
-                    Ok(shape) => fields.push((f.name.as_str().to_string(), shape)),
-                    Err(e) => {
-                        eprintln!("skipped {owner}::{} (struct return field {}: {e})", m.name, f.name);
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok { Some((sd.name.as_str().to_string(), fields)) } else { None }
-        } else { None }
-    } else { None };
-
-    // Nullable(OutType(Primitive(_))): real fn returns OptionX { T ok; bool is_ok; }.
-    // Shim decomposes to (T* out_val, bool* out_is_ok); Jolt reads is_ok to decide nil vs value.
-    let nullable_prim_return: Option<(&'static str, &'static str)> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && struct_return.is_none() {
-        if let ReturnType::Nullable(SuccessType::OutType(hir::OutType::Primitive(p))) = &m.output {
-            let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
-            Some((jolt_ty, c_ty))
-        } else { None }
-    } else { None };
-
-    let plain_return: Option<&'static str> = if !out_ptr_needed && !is_write && !is_nullable_write && enum_return.is_none() && borrowed_slice_return.is_none() && struct_return.is_none() && nullable_prim_return.is_none() {
-        match &m.output {
-            ReturnType::Infallible(SuccessType::Unit) => Some("void"),
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Primitive(p))) => {
-                Some(prim_to_jolt_and_c(p).1)
-            }
-            ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(_))) => Some("__opaque__"),
-            other => {
-                eprintln!("skipped {owner}::{} (unsupported shimmed return {other:?})", m.name);
-                return false;
-            }
-        }
-    } else {
-        None
-    };
-
-    // Opaque return via shimmed path: same as direct — wrap the raw pointer.
-    let shimmed_opaque_wrap: Option<String> = if plain_return == Some("__opaque__") {
-        if let ReturnType::Infallible(SuccessType::OutType(hir::OutType::Opaque(op))) = &m.output {
-            let target_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
-            if target_name != owner { extra_requires.insert(target_name.clone()); }
-            Some(target_name)
-        } else { None }
-    } else { None };
-
     if out_ptr_needed {
         c_params.push("void* out".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
     }
 
-    // For borrowed slice return: shim takes extra (data_out, len_out) params.
-    if let Some((_, ref c_ty)) = borrowed_slice_return {
+    if let ReturnKind::BorrowedSlice { c_ty, .. } = &rk {
         c_params.push(format!("const {c_ty}** data_out"));
         c_params.push("size_t* len_out".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "data-out".into(), public_name: None });
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "len-out".into(), public_name: None });
     }
 
-    if let Some((_, c_ty)) = nullable_prim_return {
+    if let ReturnKind::NullablePrim { c_ty, .. } = &rk {
         c_params.push(format!("{c_ty}* out_val"));
         c_params.push("bool* out_is_ok".to_string());
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-val".into(), public_name: None });
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-is-ok".into(), public_name: None });
     }
 
-    if let Some((ref struct_name, _)) = struct_return {
+    if let ReturnKind::StructReturn { name: struct_name, .. } = &rk {
         c_params.push(format!("{struct_name}* out"));
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
     }
 
-    // Nullable(Write) C ABI: {abi_name}_result { bool is_ok } returned by value.
-    // Our shim returns int (0=none, 1=wrote) so Jolt can check it.
-    // We need the result_ty string; compute it now.
     let nullable_write_result_ty = if is_nullable_write {
         Some(format!("{}_result", m.abi_name))
     } else { None };
 
-    let shim_c_ret = if let Some((ref ename, _)) = enum_return {
-        ename.as_str()
-    } else if is_nullable_write {
-        "int"
-    } else if borrowed_slice_return.is_some() || nullable_prim_return.is_some() || struct_return.is_some() {
-        "void"
-    } else {
-        match plain_return {
-            Some("__opaque__") => "void*",
-            Some(t) => t,
-            None => "void",
-        }
+    let shim_c_ret = match &rk {
+        ReturnKind::Enum { name, .. } => name.as_str(),
+        ReturnKind::NullableWrite => "int",
+        ReturnKind::BorrowedSlice { .. } | ReturnKind::NullablePrim { .. }
+        | ReturnKind::StructReturn { .. } | ReturnKind::Fallible { .. } => "void",
+        ReturnKind::Opaque { .. } => "void*",
+        ReturnKind::Unit | ReturnKind::Write | ReturnKind::NullableOpaque { .. } => "void",
+        ReturnKind::PlainPrim { c_ty } => c_ty,
     };
+
     let real_call = format!("{}({})", m.abi_name, call_args.join(", "));
     let _ = writeln!(shim_c, "{shim_c_ret} {shim_sym}({}) {{", c_params.join(", "));
-    if let Some((_, c_ty)) = nullable_prim_return {
-        // Diplomat C ABI for Nullable(Prim): {fn_abi_name}_result { union { T ok; }; bool is_ok; }
-        let result_ty = format!("{}_result", m.abi_name);
-        let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
-        let _ = writeln!(shim_c, "    *out_val = ({c_ty})r.ok;");
-        let _ = writeln!(shim_c, "    *out_is_ok = r.is_ok;");
-    } else if let Some((ref struct_name, _)) = struct_return {
-        // Struct return by value: shim writes memcpy(out, &r, sizeof(r)).
-        let _ = writeln!(shim_c, "    {struct_name} r = {real_call};");
-        let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
-    } else if let Some((_, ref c_ty)) = borrowed_slice_return {
-        // DiplomatXView { data, size } — decompose to out params.
-        let view_prim = if c_ty == "size_t" {
-            PrimitiveType::IntSize(IntSizeType::Usize)
-        } else {
-            PrimitiveType::Int(match c_ty.as_str() {
-                "uint8_t" => IntType::U8, "int32_t" => IntType::I32, "uint32_t" => IntType::U32,
-                "int64_t" => IntType::I64, "uint64_t" => IntType::U64,
-                _ => IntType::I32,
-            })
-        };
-        let view_suffix = prim_to_diplomat_view_suffix(&view_prim);
-        let _ = writeln!(shim_c, "    Diplomat{view_suffix}View sv = {real_call};");
-        let _ = writeln!(shim_c, "    *data_out = sv.data;");
-        let _ = writeln!(shim_c, "    *len_out = sv.len;");
-    } else if out_ptr_needed {
-        let result_ty = format!("{}_result", m.abi_name);
-        let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
-        let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
-    } else if is_nullable_write {
-        // Nullable(Write) real fn returns {abi}_result { bool is_ok }.
-        // Shim calls real fn (which writes into write if is_ok), returns int is_ok.
-        let rty = nullable_write_result_ty.as_deref().unwrap();
-        let _ = writeln!(shim_c, "    {rty} r = {real_call};");
-        let _ = writeln!(shim_c, "    return (int)r.is_ok;");
-    } else if plain_return == Some("void") {
-        let _ = writeln!(shim_c, "    {real_call};");
-    } else {
-        let _ = writeln!(shim_c, "    return {real_call};");
+
+    match &rk {
+        ReturnKind::NullablePrim { c_ty, .. } => {
+            let result_ty = format!("{}_result", m.abi_name);
+            let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
+            let _ = writeln!(shim_c, "    *out_val = ({c_ty})r.ok;");
+            let _ = writeln!(shim_c, "    *out_is_ok = r.is_ok;");
+        }
+        ReturnKind::StructReturn { name: struct_name, .. } => {
+            let _ = writeln!(shim_c, "    {struct_name} r = {real_call};");
+            let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
+        }
+        ReturnKind::BorrowedSlice { c_ty, .. } => {
+            let view_prim = if *c_ty == "size_t" {
+                PrimitiveType::IntSize(IntSizeType::Usize)
+            } else {
+                PrimitiveType::Int(match *c_ty {
+                    "uint8_t" => IntType::U8, "int32_t" => IntType::I32, "uint32_t" => IntType::U32,
+                    "int64_t" => IntType::I64, "uint64_t" => IntType::U64,
+                    _ => IntType::I32,
+                })
+            };
+            let view_suffix = prim_to_diplomat_view_suffix(&view_prim);
+            let _ = writeln!(shim_c, "    Diplomat{view_suffix}View sv = {real_call};");
+            let _ = writeln!(shim_c, "    *data_out = sv.data;");
+            let _ = writeln!(shim_c, "    *len_out = sv.len;");
+        }
+        ReturnKind::Fallible { .. } => {
+            let result_ty = format!("{}_result", m.abi_name);
+            let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
+            let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
+        }
+        ReturnKind::NullableWrite => {
+            let rty = nullable_write_result_ty.as_deref().unwrap();
+            let _ = writeln!(shim_c, "    {rty} r = {real_call};");
+            let _ = writeln!(shim_c, "    return (int)r.is_ok;");
+        }
+        ReturnKind::Unit | ReturnKind::Write | ReturnKind::NullableOpaque { .. } => {
+            let _ = writeln!(shim_c, "    {real_call};");
+        }
+        _ => {
+            let _ = writeln!(shim_c, "    return {real_call};");
+        }
     }
     let _ = writeln!(shim_c, "}}");
     let _ = writeln!(shim_c);
 
-    let clj_ret_ty = if borrowed_slice_return.is_some() || struct_return.is_some() || nullable_prim_return.is_some() {
-        ":void"
-    } else if enum_return.is_some() {
-        ":int"
-    } else if is_nullable_write {
-        ":int"
-    } else {
-        match plain_return {
-            Some("void") | None => ":void",
-            Some("__opaque__") => ":pointer",
-            Some(c_ty) => match c_ty {
-                "uint8_t" => ":uint8",
-                "uint16_t" | "uint32_t" | "char32_t" => ":uint",
-                "int16_t" | "int8_t" | "int32_t" | "bool" => ":int",
-                "int64_t" => ":int64",
-                "uint64_t" => ":uint64",
-                "size_t" => ":size_t",
-                "ssize_t" => ":ssize_t",
-                "double" | "float" => ":double",
-                _ => panic!("jolt-diplomat-backend: no jolt return keyword for C type {c_ty}"),
-            },
-        }
+    let clj_ret_ty = match &rk {
+        ReturnKind::BorrowedSlice { .. } | ReturnKind::StructReturn { .. }
+        | ReturnKind::NullablePrim { .. } | ReturnKind::Fallible { .. }
+        | ReturnKind::Unit | ReturnKind::Write => ":void",
+        ReturnKind::Enum { .. } | ReturnKind::NullableWrite => ":int",
+        ReturnKind::Opaque { .. } | ReturnKind::NullableOpaque { .. } => ":pointer",
+        ReturnKind::PlainPrim { c_ty } => c_ty_to_jolt_kw(c_ty),
     };
 
     let shim_arg_types: Vec<String> = arg_specs.iter().map(|a| a.clj_type.clone()).collect();
     let shim_call_exprs: Vec<String> = arg_specs.iter().map(|a| a.call_expr.clone()).collect();
 
-    // Emit sizeof helper for struct returns before the main defcfn.
-    if let Some((ref struct_name, ref fields)) = struct_return {
+    // Struct return: emit sizeof + defcfn + body early and return.
+    if let ReturnKind::StructReturn { name: struct_name, fields } = &rk {
         let sizeof_sym = format!("jolt_sizeof_{}_mv1", to_snake(struct_name));
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{}-struct \"{sizeof_sym}\" [] :int)",
             to_kebab(struct_name));
         let _ = writeln!(shim_c, "size_t {sizeof_sym}(void) {{ return sizeof({struct_name}); }}");
-        // Precompute field reads for the body.
         let (_, field_reads) = compute_struct_offsets(fields);
         let reads: Vec<String> = field_reads.iter()
             .map(|(fname, off, jt)| {
@@ -993,19 +965,25 @@ fn gen_method(
 
     let mut body_lines: Vec<String> = vec![];
 
+    // Helper: build the msg_fn suffix for unwrap-result!
+    let msg_fn_suffix = |opaque_error: &Option<(String, String)>, fn_name: &str| -> String {
+        match opaque_error.as_ref().map(|(_, a)| format!("{a}/message")) {
+            Some(mf) => format!("     \"{owner}/{fn_name}\" {mf})"),
+            None      => format!("     \"{owner}/{fn_name}\")"),
+        }
+    };
+
     if out_ptr_needed {
         let result_sizeof_sym = format!("jolt_sizeof_{}_result", m.abi_name);
         let result_c_ty = format!("{}_result", m.abi_name);
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{fn_name}-result \"{result_sizeof_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {result_sizeof_sym}(void) {{ return sizeof({result_c_ty}); }}");
-        // Use ->ErrName for opaque errors, raw int otherwise.
         let err_read = match &opaque_error {
             Some((err_name, err_alias)) =>
                 format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) true)"),
             None => "(ffi/read out :int 0)".to_string(),
         };
         if is_write {
-            // Fallible(Write, E): shim receives (... write out); on success returns string.
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]"));
             body_lines.push("  (try".to_string());
             body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
@@ -1014,12 +992,7 @@ fn gen_method(
             body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
             body_lines.push("       {:ok? true :value (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))}".to_string());
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
-            let msg_fn = opaque_error.as_ref().map(|(_, a)| format!("{a}/message")).unwrap_or_default();
-            if msg_fn.is_empty() {
-                body_lines.push(format!("     \"{owner}/{fn_name}\")"));
-            } else {
-                body_lines.push(format!("     \"{owner}/{fn_name}\" {msg_fn})"));
-            }
+            body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
             body_lines.push("    (finally (ffi/free out) (ffi/free buf) (ffi/free w))))".to_string());
         } else {
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz)]"));
@@ -1029,16 +1002,10 @@ fn gen_method(
             body_lines.push("     (if (= 1 (ffi/read out :uint8 8))".to_string());
             body_lines.push(format!("       {{:ok? true :value (->{owner} (ffi/read out :pointer 0) false)}}"));
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
-            let msg_fn = opaque_error.as_ref().map(|(_, a)| format!("{a}/message")).unwrap_or_default();
-            if msg_fn.is_empty() {
-                body_lines.push(format!("     \"{owner}/{fn_name}\")"));
-            } else {
-                body_lines.push(format!("     \"{owner}/{fn_name}\" {msg_fn})"));
-            }
+            body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
             body_lines.push("    (finally (ffi/free out))))".to_string());
         }
     } else if is_nullable_write {
-        // Nullable(Write) — shim returns bool; Jolt gets String or nil.
         body_lines.push("(let [buf (ffi/alloc 256) w (ffi/alloc dr/writeable-struct-size)]".to_string());
         body_lines.push("  (try".to_string());
         body_lines.push("    (dr/simple-write! buf 256 w)".to_string());
@@ -1052,35 +1019,24 @@ fn gen_method(
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push("    (let [n (ffi/read w :size_t dr/O-len)] (ffi/read-bytes buf n))".to_string());
         body_lines.push("    (finally (ffi/free buf) (ffi/free w))))".to_string());
-    } else if let Some((ref jolt_ty, _)) = borrowed_slice_return {
-        // Borrowed slice — shim writes (data_ptr, len) into out params on stack.
-        // Jolt reads them back. The pointer is borrowed from self; lifetime = self.
+    } else if let ReturnKind::BorrowedSlice { jolt_ty, .. } = &rk {
         body_lines.push(format!("(let [data-out (ffi/alloc 8) len-out (ffi/alloc 8)]"));
         body_lines.push("  (try".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
         body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))"));
         body_lines.push("    (finally (ffi/free data-out) (ffi/free len-out))))".to_string());
-    } else if let Some((ref jolt_ty, _)) = nullable_prim_return {
-        // Nullable(Prim): shim writes value into out-val, bool into out-is-ok.
+    } else if let ReturnKind::NullablePrim { jolt_ty, .. } = &rk {
         body_lines.push(format!("(let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]"));
         body_lines.push("  (try".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val {jolt_ty} 0))"));
         body_lines.push("    (finally (ffi/free out-val) (ffi/free out-is-ok))))".to_string());
-    } else if let Some((_, ref alias)) = enum_return {
-        // Enum return — shim returns int, convert to keyword.
+    } else if let ReturnKind::Enum { alias, .. } = &rk {
+        body_lines.push(format!("({alias}/int->kw (c-{fn_name} {}))", shim_call_exprs.join(" ")));
+    } else if let ReturnKind::Opaque { target } = &rk {
         let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
-        body_lines.push(format!("({alias}/int->kw {call_expr})"));
-    } else if let Some(target) = &shimmed_opaque_wrap {
-        let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
-        let wrap = if target != owner {
-            let alias = to_kebab(target);
-            format!("({alias}/->{target} {call_expr} false)")
-        } else {
-            format!("(->{target} {call_expr} false)")
-        };
-        body_lines.push(wrap);
+        body_lines.push(emit_opaque_wrap(target, owner, &call_expr, false));
     } else {
         body_lines.push(format!("(c-{fn_name} {})", shim_call_exprs.join(" ")));
     }

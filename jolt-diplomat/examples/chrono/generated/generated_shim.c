@@ -16,7 +16,7 @@ void jolt_chrono_DateTime_parse_mv1(const char* s_data, size_t s_len, void* out)
 
 size_t jolt_sizeof_chrono_DateTime_parse_mv1_result(void) { return sizeof(chrono_DateTime_parse_mv1_result); }
 void jolt_chrono_DateTime_to_rfc3339_mv1(const DateTime* self, DiplomatWrite* write) {
-    return chrono_DateTime_to_rfc3339_mv1(self, write);
+    chrono_DateTime_to_rfc3339_mv1(self, write);
 }
 
 int jolt_chrono_DateTime_format_mv1(const DateTime* self, const char* fmt_data, size_t fmt_len, DiplomatWrite* write) {
@@ -31,6 +31,6 @@ void jolt_chrono_DateTime_components_mv1(const DateTime* self, DateComponents* o
 
 size_t jolt_sizeof_date_components_mv1(void) { return sizeof(DateComponents); }
 void jolt_chrono_DateTimeError_message_mv1(const DateTimeError* self, DiplomatWrite* write) {
-    return chrono_DateTimeError_message_mv1(self, write);
+    chrono_DateTimeError_message_mv1(self, write);
 }
 

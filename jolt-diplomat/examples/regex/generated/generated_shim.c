@@ -25,10 +25,10 @@ int jolt_rx_Regex_find_mv1(const Regex* self, const char* text_data, size_t text
 }
 
 void jolt_rx_Regex_replace_all_mv1(const Regex* self, const char* text_data, size_t text_len, const char* replacement_data, size_t replacement_len, DiplomatWrite* write) {
-    return rx_Regex_replace_all_mv1(self, (DiplomatStringView){ .data = text_data, .len = text_len }, (DiplomatStringView){ .data = replacement_data, .len = replacement_len }, write);
+    rx_Regex_replace_all_mv1(self, (DiplomatStringView){ .data = text_data, .len = text_len }, (DiplomatStringView){ .data = replacement_data, .len = replacement_len }, write);
 }
 
 void jolt_rx_RegexError_message_mv1(const RegexError* self, DiplomatWrite* write) {
-    return rx_RegexError_message_mv1(self, write);
+    rx_RegexError_message_mv1(self, write);
 }
 

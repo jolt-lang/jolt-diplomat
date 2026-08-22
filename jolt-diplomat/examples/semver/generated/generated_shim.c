@@ -11,7 +11,7 @@ void jolt_diplomat_simple_write(char* buf, size_t buf_size, void* out) {
 }
 
 void jolt_sv_ParseError_message_mv1(const ParseError* self, DiplomatWrite* write) {
-    return sv_ParseError_message_mv1(self, write);
+    sv_ParseError_message_mv1(self, write);
 }
 
 void jolt_sv_Version_parse_mv1(const char* text_data, size_t text_len, void* out) {
@@ -21,7 +21,7 @@ void jolt_sv_Version_parse_mv1(const char* text_data, size_t text_len, void* out
 
 size_t jolt_sizeof_sv_Version_parse_mv1_result(void) { return sizeof(sv_Version_parse_mv1_result); }
 void jolt_sv_Version_to_string_mv1(const Version* self, DiplomatWrite* write) {
-    return sv_Version_to_string_mv1(self, write);
+    sv_Version_to_string_mv1(self, write);
 }
 
 int jolt_sv_Version_pre_mv1(const Version* self, DiplomatWrite* write) {
@@ -40,6 +40,6 @@ bool jolt_sv_VersionReq_matches_mv1(const VersionReq* self, const Version* versi
 }
 
 void jolt_sv_VersionReq_to_string_mv1(const VersionReq* self, DiplomatWrite* write) {
-    return sv_VersionReq_to_string_mv1(self, write);
+    sv_VersionReq_to_string_mv1(self, write);
 }
 

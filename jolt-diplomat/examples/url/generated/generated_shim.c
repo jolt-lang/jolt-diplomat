@@ -16,7 +16,7 @@ void jolt_url_Url_parse_mv1(const char* input_data, size_t input_len, void* out)
 
 size_t jolt_sizeof_url_Url_parse_mv1_result(void) { return sizeof(url_Url_parse_mv1_result); }
 void jolt_url_Url_scheme_mv1(const Url* self, DiplomatWrite* write) {
-    return url_Url_scheme_mv1(self, write);
+    url_Url_scheme_mv1(self, write);
 }
 
 int jolt_url_Url_host_mv1(const Url* self, DiplomatWrite* write) {
@@ -25,7 +25,7 @@ int jolt_url_Url_host_mv1(const Url* self, DiplomatWrite* write) {
 }
 
 void jolt_url_Url_path_mv1(const Url* self, DiplomatWrite* write) {
-    return url_Url_path_mv1(self, write);
+    url_Url_path_mv1(self, write);
 }
 
 int jolt_url_Url_query_mv1(const Url* self, DiplomatWrite* write) {
@@ -40,7 +40,7 @@ void jolt_url_Url_port_mv1(const Url* self, uint16_t* out_val, bool* out_is_ok) 
 }
 
 void jolt_url_Url_to_string_mv1(const Url* self, DiplomatWrite* write) {
-    return url_Url_to_string_mv1(self, write);
+    url_Url_to_string_mv1(self, write);
 }
 
 void jolt_url_Url_info_mv1(const Url* self, UrlInfo* out) {
@@ -50,6 +50,6 @@ void jolt_url_Url_info_mv1(const Url* self, UrlInfo* out) {
 
 size_t jolt_sizeof_url_info_mv1(void) { return sizeof(UrlInfo); }
 void jolt_url_UrlError_message_mv1(const UrlError* self, DiplomatWrite* write) {
-    return url_UrlError_message_mv1(self, write);
+    url_UrlError_message_mv1(self, write);
 }
 
