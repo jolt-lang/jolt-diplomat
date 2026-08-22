@@ -1,0 +1,2 @@
+{:paths ["src" "../generated"]
+ :deps {jolt-diplomat-runtime/jolt-diplomat-runtime {:local/root "../../jolt-runtime"}}}
