@@ -50,6 +50,9 @@ void jolt_url_Url_info_mv1(const Url* self, UrlInfo* out) {
 }
 
 size_t jolt_sizeof_url_info_mv1(void) { return sizeof(UrlInfo); }
+size_t jolt_offsetof_url_info_port_mv1(void) { return offsetof(UrlInfo, port); }
+size_t jolt_offsetof_url_info_has_port_mv1(void) { return offsetof(UrlInfo, has_port); }
+size_t jolt_offsetof_url_info_path_len_mv1(void) { return offsetof(UrlInfo, path_len); }
 void jolt_url_UrlError_message_mv1(const UrlError* self, DiplomatWrite* write) {
     url_UrlError_message_mv1(self, write);
 }

@@ -58,11 +58,14 @@
 )
 
 (ffi/defcfn ^:private c-sizeof-url-info-struct "jolt_sizeof_url_info_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-url-info-port "jolt_offsetof_url_info_port_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-url-info-has-port "jolt_offsetof_url_info_has_port_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-url-info-path-len "jolt_offsetof_url_info_path_len_mv1" [] :int)
 (ffi/defcfn ^:private c-info "jolt_url_Url_info_mv1" [:pointer :pointer] :void)
 (defn info [self]
   (let [sz (c-sizeof-url-info-struct) out (ffi/alloc sz)]
     (try
       (c-info (:ptr self) out)
-      {:port (dr/read-u16 out 0) :has-port (ffi/read out :uint8 2) :path-len (ffi/read out :uint 4)} 
+      {:port (dr/read-u16 out (c-offsetof-url-info-port)) :has-port (ffi/read out :uint8 (c-offsetof-url-info-has-port)) :path-len (ffi/read out :uint (c-offsetof-url-info-path-len))}
       (finally (ffi/free out)))))
 

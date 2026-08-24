@@ -31,6 +31,12 @@ void jolt_chrono_DateTime_components_mv1(const DateTime* self, DateComponents* o
 }
 
 size_t jolt_sizeof_date_components_mv1(void) { return sizeof(DateComponents); }
+size_t jolt_offsetof_date_components_year_mv1(void) { return offsetof(DateComponents, year); }
+size_t jolt_offsetof_date_components_month_mv1(void) { return offsetof(DateComponents, month); }
+size_t jolt_offsetof_date_components_day_mv1(void) { return offsetof(DateComponents, day); }
+size_t jolt_offsetof_date_components_hour_mv1(void) { return offsetof(DateComponents, hour); }
+size_t jolt_offsetof_date_components_minute_mv1(void) { return offsetof(DateComponents, minute); }
+size_t jolt_offsetof_date_components_second_mv1(void) { return offsetof(DateComponents, second); }
 void jolt_chrono_DateTimeError_message_mv1(const DateTimeError* self, DiplomatWrite* write) {
     chrono_DateTimeError_message_mv1(self, write);
 }

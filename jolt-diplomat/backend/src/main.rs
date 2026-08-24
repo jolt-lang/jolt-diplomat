@@ -345,67 +345,45 @@ fn build_c_literal(shape: &FieldShape, flat_prefix: &str) -> String {
     }
 }
 
-/// Compute C struct field offsets (byte offset, jolt type keyword) for a list of
-/// FieldShapes. Only handles flat primitive/enum leaves — nested structs recurse.
-/// Returns (total_size, Vec<(field_kebab_name, offset, jolt_ty)>).
-fn compute_struct_offsets(fields: &[(String, FieldShape)]) -> (usize, Vec<(String, usize, String)>) {
-    let mut offset = 0usize;
-    let mut result = vec![];
+/// Collect leaf fields for a struct return, returning
+/// (kebab_name, c_field_path, jolt_read_ty) per leaf.
+/// c_field_path is usable in offsetof(StructName, c_field_path).
+/// jolt_read_ty is the keyword for ffi/read (or ":u16" for dr/read-u16).
+fn collect_struct_field_leaves(
+    fields: &[(String, FieldShape)],
+    prefix_kebab: &str,
+    prefix_c: &str,
+    out: &mut Vec<(String, String, String)>,
+) {
     for (fname, shape) in fields {
-        let (jolt_ty, size, align) = match shape {
+        let kebab = if prefix_kebab.is_empty() {
+            to_kebab(fname)
+        } else {
+            format!("{prefix_kebab}-{}", to_kebab(fname))
+        };
+        let c_path = if prefix_c.is_empty() {
+            fname.clone()
+        } else {
+            format!("{prefix_c}.{fname}")
+        };
+        match shape {
             FieldShape::Prim { jolt_ty, c_ty, .. } => {
-                let sz = match c_ty.as_str() {
-                    "bool" | "uint8_t" | "int8_t" => (1usize, 1usize),
-                    "uint16_t" | "int16_t" => (2, 2),
-                    "uint32_t" | "int32_t" | "char32_t" => (4, 4),
-                    "uint64_t" | "int64_t" | "size_t" | "ssize_t" | "double" => (8, 8),
-                    "float" => (4, 4),
-                    _ => (8, 8), // conservative fallback
-                };
-                // bool → :uint8; u16/i16 → :u16 (dr/read-u16 helper, no native 16-bit read)
                 let read_ty = match c_ty.as_str() {
                     "bool" => ":uint8".to_string(),
                     "uint16_t" | "int16_t" => ":u16".to_string(),
                     _ => jolt_ty.clone(),
                 };
-                (read_ty, sz.0, sz.1)
+                out.push((kebab, c_path, read_ty));
             }
-            FieldShape::EnumField { .. } => (":int".to_string(), 4, 4),
-            // Nested struct: recurse and treat as a block.
+            FieldShape::EnumField { .. } => {
+                out.push((kebab, c_path, ":int".to_string()));
+            }
             FieldShape::Nested { fields: sub_fields, .. } => {
-                let (sub_size, sub_items) = compute_struct_offsets(sub_fields);
-                let sub_align = sub_items.iter().map(|(_, _, jt)| field_align(jt)).max().unwrap_or(1);
-                offset = align_up(offset, sub_align);
-                for (sub_name, sub_off, sub_jt) in sub_items {
-                    result.push((format!("{}-{}", to_kebab(fname), sub_name), offset + sub_off, sub_jt));
-                }
-                offset += sub_size;
-                continue;
+                collect_struct_field_leaves(sub_fields, &kebab, &c_path, out);
             }
-            _ => (":int".to_string(), 4, 4), // OptionPrim/OptionEnum — skip for now
-        };
-        offset = align_up(offset, align);
-        result.push((to_kebab(fname), offset, jolt_ty));
-        offset += size;
+            _ => {} // OptionPrim/OptionEnum in struct fields — not yet supported
+        }
     }
-    // Total size padded to max field alignment.
-    let max_align = result.iter().map(|(_, _, jt)| field_align(jt)).max().unwrap_or(1);
-    let total = align_up(offset, max_align);
-    (total, result)
-}
-
-fn field_align(jolt_ty: &str) -> usize {
-    match jolt_ty {
-        ":uint8" => 1,
-        ":u16" => 2,
-        ":uint" | ":int" => 4,
-        ":uint64" | ":int64" | ":size_t" | ":ssize_t" | ":double" | ":pointer" => 8,
-        _ => 4,
-    }
-}
-
-fn align_up(offset: usize, align: usize) -> usize {
-    (offset + align - 1) & !(align - 1)
 }
 
 fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut String) -> String {
@@ -441,7 +419,7 @@ enum ReturnKind {
     Write,
     NullableWrite,
     Fallible { is_write: bool },
-    BorrowedSlice { jolt_ty: &'static str, c_ty: &'static str },
+    BorrowedSlice { jolt_ty: &'static str, c_ty: &'static str, view_suffix: &'static str },
     StructReturn { name: String, fields: Vec<(String, FieldShape)> },
     NullablePrim { jolt_ty: &'static str, c_ty: &'static str },
     Enum { name: String, alias: String },
@@ -471,7 +449,8 @@ fn classify_return(
             hir::Slice::Primitive(_, prim)
         ))) => {
             let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
-            Some(ReturnKind::BorrowedSlice { jolt_ty, c_ty })
+            let view_suffix = prim_to_diplomat_view_suffix(prim);
+            Some(ReturnKind::BorrowedSlice { jolt_ty, c_ty, view_suffix })
         }
 
         ReturnType::Infallible(SuccessType::OutType(hir::OutType::Struct(sp))) => {
@@ -608,7 +587,6 @@ fn gen_method(
     struct ArgSpec {
         clj_type: String,
         call_expr: String,
-        public_name: Option<String>,
     }
     let shim_sym = format!("jolt_{}", m.abi_name);
     let mut c_params = vec![];
@@ -618,7 +596,7 @@ fn gen_method(
 
     if has_self {
         c_params.push(format!("const {owner}* self"));
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into(), public_name: Some("self".into()) });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into() });
     }
 
     let mut call_args = vec![];
@@ -631,7 +609,7 @@ fn gen_method(
             Type::Primitive(prim) => {
                 let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
                 c_params.push(format!("{c_ty} {cname}"));
-                arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: pname.clone() });
                 call_args.push(cname);
             }
             Type::Enum(ep) => {
@@ -643,31 +621,22 @@ fn gen_method(
                 arg_specs.push(ArgSpec {
                     clj_type: ":int".into(),
                     call_expr: format!("({enum_alias}/kw->int {pname})"),
-                    public_name: Some(pname.clone()),
                 });
                 call_args.push(cname);
             }
-            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::Utf8)) => {
-                // Both Utf8 and UnvalidatedUtf8 are DiplomatStringView in C ABI.
+            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::Utf8 | hir::StringEncoding::UnvalidatedUtf8)) => {
                 c_params.push(format!("const char* {cname}_data"));
                 c_params.push(format!("size_t {cname}_len"));
-                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
-                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
-                call_args.push(format!("(DiplomatStringView){{ .data = {cname}_data, .len = {cname}_len }}"));
-            }
-            Type::Slice(hir::Slice::Str(_, hir::StringEncoding::UnvalidatedUtf8)) => {
-                c_params.push(format!("const char* {cname}_data"));
-                c_params.push(format!("size_t {cname}_len"));
-                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
-                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone() });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
                 call_args.push(format!("(DiplomatStringView){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
             Type::Slice(hir::Slice::Str(_, hir::StringEncoding::UnvalidatedUtf16)) => {
                 // DiplomatString16View — {char16_t* data, size_t len}.
                 c_params.push(format!("const char16_t* {cname}_data"));
                 c_params.push(format!("size_t {cname}_len"));
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: pname.clone(), public_name: Some(pname.clone()) });
-                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: pname.clone() });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
                 call_args.push(format!("(DiplomatString16View){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
             Type::Slice(hir::Slice::Primitive(_, prim)) => {
@@ -675,8 +644,8 @@ fn gen_method(
                 let view_suffix = prim_to_diplomat_view_suffix(prim);
                 c_params.push(format!("const {c_ty}* {cname}_data"));
                 c_params.push(format!("size_t {cname}_len"));
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-buf"), public_name: Some(pname.clone()) });
-                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})"), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-buf") });
+                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
                 buffer_wraps.push((format!("{pname}-buf"), jolt_ty.to_string(), pname.clone()));
                 call_args.push(format!("(Diplomat{view_suffix}View){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
@@ -693,7 +662,7 @@ fn gen_method(
                 flatten_leaves(&shape, &cname, &pname, &mut leaves);
                 for (c_ty, flat_c_name, jolt_ty, call_expr) in &leaves {
                     c_params.push(format!("{c_ty} {flat_c_name}"));
-                    arg_specs.push(ArgSpec { clj_type: jolt_ty.clone(), call_expr: call_expr.clone(), public_name: None });
+                    arg_specs.push(ArgSpec { clj_type: jolt_ty.clone(), call_expr: call_expr.clone() });
                 }
                 call_args.push(build_c_literal(&shape, &cname));
             }
@@ -707,8 +676,8 @@ fn gen_method(
                         let opt_ty = format!("Option{view_suffix}");
                         c_params.push(format!("{c_ty} {cname}_value"));
                         c_params.push(format!("bool {cname}_is_ok"));
-                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)"), public_name: Some(pname.clone()) });
-                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
+                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)") });
+                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)") });
                         call_args.push(format!("({opt_ty}){{ .ok = {cname}_value, .is_ok = {cname}_is_ok }}"));
                     }
                     Type::Enum(ep) => {
@@ -722,9 +691,8 @@ fn gen_method(
                         arg_specs.push(ArgSpec {
                             clj_type: ":int".into(),
                             call_expr: format!("(if {pname} ({enum_alias}/kw->int {pname}) 0)"),
-                            public_name: Some(pname.clone()),
                         });
-                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)"), public_name: None });
+                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)") });
                         call_args.push(format!("({opt_ty}){{ .ok = {cname}_value, .is_ok = {cname}_is_ok }}"));
                     }
                     other => {
@@ -736,7 +704,7 @@ fn gen_method(
             Type::Opaque(op) => {
                 let op_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
                 c_params.push(format!("const {op_name}* {cname}"));
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})"), public_name: Some(pname.clone()) });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})") });
                 call_args.push(cname);
             }
             Type::Callback(cb) => {
@@ -770,9 +738,9 @@ fn gen_method(
                 c_params.push(format!("{cb_ret_c} (*{cname}_run_callback)({})", cb_c_params.join(", ")));
                 c_params.push(format!("void (*{cname}_destructor)(const void*)"));
 
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "ffi/null".into(), public_name: None });
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-run-cb"), public_name: None });
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-destructor"), public_name: None });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "ffi/null".into() });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-run-cb") });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-destructor") });
 
                 let cb_fn_params = format!("_data {}", cb_param_names.join(" "));
                 let cb_fn_call = format!("({pname} {})", cb_param_names.join(" "));
@@ -820,7 +788,7 @@ fn gen_method(
 
     if is_write || is_nullable_write {
         c_params.push("DiplomatWrite* write".to_string());
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "w".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "w".into() });
         call_args.push("write".to_string());
     }
 
@@ -834,31 +802,27 @@ fn gen_method(
 
     if out_ptr_needed {
         c_params.push("void* out".to_string());
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into() });
     }
 
     if let ReturnKind::BorrowedSlice { c_ty, .. } = &rk {
         c_params.push(format!("const {c_ty}** data_out"));
         c_params.push("size_t* len_out".to_string());
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "data-out".into(), public_name: None });
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "len-out".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "data-out".into() });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "len-out".into() });
     }
 
     if let ReturnKind::NullablePrim { c_ty, .. } = &rk {
         c_params.push(format!("{c_ty}* out_val"));
         c_params.push("bool* out_is_ok".to_string());
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-val".into(), public_name: None });
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-is-ok".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-val".into() });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out-is-ok".into() });
     }
 
     if let ReturnKind::StructReturn { name: struct_name, .. } = &rk {
         c_params.push(format!("{struct_name}* out"));
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into(), public_name: None });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "out".into() });
     }
-
-    let nullable_write_result_ty = if is_nullable_write {
-        Some(format!("{}_result", m.abi_name))
-    } else { None };
 
     let shim_c_ret = match &rk {
         ReturnKind::Enum { name, .. } => name.as_str(),
@@ -884,17 +848,7 @@ fn gen_method(
             let _ = writeln!(shim_c, "    {struct_name} r = {real_call};");
             let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
         }
-        ReturnKind::BorrowedSlice { c_ty, .. } => {
-            let view_prim = if *c_ty == "size_t" {
-                PrimitiveType::IntSize(IntSizeType::Usize)
-            } else {
-                PrimitiveType::Int(match *c_ty {
-                    "uint8_t" => IntType::U8, "int32_t" => IntType::I32, "uint32_t" => IntType::U32,
-                    "int64_t" => IntType::I64, "uint64_t" => IntType::U64,
-                    _ => IntType::I32,
-                })
-            };
-            let view_suffix = prim_to_diplomat_view_suffix(&view_prim);
+        ReturnKind::BorrowedSlice { view_suffix, .. } => {
             let _ = writeln!(shim_c, "    Diplomat{view_suffix}View sv = {real_call};");
             let _ = writeln!(shim_c, "    *data_out = sv.data;");
             let _ = writeln!(shim_c, "    *len_out = sv.len;");
@@ -905,8 +859,8 @@ fn gen_method(
             let _ = writeln!(shim_c, "    memcpy(out, &r, sizeof(r));");
         }
         ReturnKind::NullableWrite => {
-            let rty = nullable_write_result_ty.as_deref().unwrap();
-            let _ = writeln!(shim_c, "    {rty} r = {real_call};");
+            let result_ty = format!("{}_result", m.abi_name);
+            let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
             let _ = writeln!(shim_c, "    return (int)r.is_ok;");
         }
         ReturnKind::Unit | ReturnKind::Write | ReturnKind::NullableOpaque { .. } => {
@@ -930,31 +884,49 @@ fn gen_method(
 
     let shim_arg_types: Vec<String> = arg_specs.iter().map(|a| a.clj_type.clone()).collect();
     let shim_call_exprs: Vec<String> = arg_specs.iter().map(|a| a.call_expr.clone()).collect();
+    // For write paths: replace the "w" sentinel with the lambda arg name "w__".
+    let exprs_w_as_arg: Vec<String> = shim_call_exprs.iter()
+        .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
+        .collect();
 
-    // Struct return: emit sizeof + defcfn + body early and return.
+    // Struct return: emit sizeof + per-field offsetof shims, then defcfn + body.
     if let ReturnKind::StructReturn { name: struct_name, fields } = &rk {
-        let sizeof_sym = format!("jolt_sizeof_{}_mv1", to_snake(struct_name));
-        let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{}-struct \"{sizeof_sym}\" [] :int)",
-            to_kebab(struct_name));
+        let struct_snake = to_snake(struct_name);
+        let struct_kebab = to_kebab(struct_name);
+        let sizeof_sym = format!("jolt_sizeof_{struct_snake}_mv1");
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{struct_kebab}-struct \"{sizeof_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {sizeof_sym}(void) {{ return sizeof({struct_name}); }}");
-        let (_, field_reads) = compute_struct_offsets(fields);
-        let reads: Vec<String> = field_reads.iter()
-            .map(|(fname, off, jt)| {
+
+        let mut leaf_fields: Vec<(String, String, String)> = vec![];
+        collect_struct_field_leaves(fields, "", "", &mut leaf_fields);
+
+        // Emit one offsetof shim + defcfn per leaf field.
+        for (fname_kebab, c_field_path, _) in &leaf_fields {
+            let field_snake = fname_kebab.replace('-', "_");
+            let offsetof_sym = format!("jolt_offsetof_{struct_snake}_{field_snake}_mv1");
+            let _ = writeln!(shim_c, "size_t {offsetof_sym}(void) {{ return offsetof({struct_name}, {c_field_path}); }}");
+            let _ = writeln!(out, "(ffi/defcfn ^:private c-offsetof-{struct_kebab}-{fname_kebab} \"{offsetof_sym}\" [] :int)");
+        }
+
+        let reads: Vec<String> = leaf_fields.iter()
+            .map(|(fname_kebab, _, jt)| {
+                let off_call = format!("(c-offsetof-{struct_kebab}-{fname_kebab})");
                 let read_expr = if jt == ":u16" {
-                    format!("(dr/read-u16 out {off})")
+                    format!("(dr/read-u16 out {off_call})")
                 } else {
-                    format!("(ffi/read out {jt} {off})")
+                    format!("(ffi/read out {jt} {off_call})")
                 };
-                format!(":{fname} {read_expr}")
+                format!(":{fname_kebab} {read_expr}")
             })
             .collect();
+
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
             shim_arg_types.join(" "));
         let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
-        let _ = writeln!(out, "  (let [sz (c-sizeof-{}-struct) out (ffi/alloc sz)]", to_kebab(struct_name));
+        let _ = writeln!(out, "  (let [sz (c-sizeof-{struct_kebab}-struct) out (ffi/alloc sz)]");
         let _ = writeln!(out, "    (try");
         let _ = writeln!(out, "      (c-{fn_name} {})", shim_call_exprs.join(" "));
-        let _ = writeln!(out, "      {{{}}} ", reads.join(" "));
+        let _ = writeln!(out, "      {{{}}}", reads.join(" "));
         let _ = writeln!(out, "      (finally (ffi/free out)))))");
         let _ = writeln!(out);
         return true;
@@ -987,13 +959,8 @@ fn gen_method(
                 format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) false)"),
             None => "(ffi/read out :int 0)".to_string(),
         };
-        // "w" literal in shim_call_exprs → replaced by lambda arg name "w__"
-        // to avoid shadowing; out_ptr_needed path also has "out" in exprs.
-        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
-            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
-            .collect();
         if is_write {
-            let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+            let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
             let msg_suffix = msg_fn_suffix(&opaque_error, &fn_name);
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
             body_lines.push("  (try".to_string());
@@ -1017,16 +984,10 @@ fn gen_method(
             body_lines.push("    (finally (ffi/free out))))".to_string());
         }
     } else if is_nullable_write {
-        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
-            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
-            .collect();
-        let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+        let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
         body_lines.push(format!("(dr/writeable-capture-when (fn [w__] {inner_call}))"));
     } else if is_write {
-        let exprs_with_w_as_arg: Vec<String> = shim_call_exprs.iter()
-            .map(|s| if s == "w" { "w__".to_string() } else { s.clone() })
-            .collect();
-        let inner_call = format!("(c-{fn_name} {})", exprs_with_w_as_arg.join(" "));
+        let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
         body_lines.push(format!("(dr/writeable-capture (fn [w__] {inner_call}))"))
     } else if let ReturnKind::BorrowedSlice { jolt_ty, .. } = &rk {
         body_lines.push(format!("(let [data-out (ffi/alloc 8) len-out (ffi/alloc 8)]"));

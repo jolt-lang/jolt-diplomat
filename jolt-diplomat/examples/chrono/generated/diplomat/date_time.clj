@@ -43,11 +43,17 @@
 (defn timestamp-secs [self] (c-timestamp-secs (:ptr self)))
 
 (ffi/defcfn ^:private c-sizeof-date-components-struct "jolt_sizeof_date_components_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-year "jolt_offsetof_date_components_year_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-month "jolt_offsetof_date_components_month_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-day "jolt_offsetof_date_components_day_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-hour "jolt_offsetof_date_components_hour_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-minute "jolt_offsetof_date_components_minute_mv1" [] :int)
+(ffi/defcfn ^:private c-offsetof-date-components-second "jolt_offsetof_date_components_second_mv1" [] :int)
 (ffi/defcfn ^:private c-components "jolt_chrono_DateTime_components_mv1" [:pointer :pointer] :void)
 (defn components [self]
   (let [sz (c-sizeof-date-components-struct) out (ffi/alloc sz)]
     (try
       (c-components (:ptr self) out)
-      {:year (ffi/read out :int 0) :month (ffi/read out :uint8 4) :day (ffi/read out :uint8 5) :hour (ffi/read out :uint8 6) :minute (ffi/read out :uint8 7) :second (ffi/read out :uint8 8)} 
+      {:year (ffi/read out :int (c-offsetof-date-components-year)) :month (ffi/read out :uint8 (c-offsetof-date-components-month)) :day (ffi/read out :uint8 (c-offsetof-date-components-day)) :hour (ffi/read out :uint8 (c-offsetof-date-components-hour)) :minute (ffi/read out :uint8 (c-offsetof-date-components-minute)) :second (ffi/read out :uint8 (c-offsetof-date-components-second))}
       (finally (ffi/free out)))))
 
