@@ -82,7 +82,8 @@ fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
         PrimitiveType::Int(IntType::U64) => (":uint64", "uint64_t"),
         PrimitiveType::IntSize(IntSizeType::Usize) => (":size_t", "size_t"),
         PrimitiveType::IntSize(IntSizeType::Isize) => (":ssize_t", "ssize_t"),
-        PrimitiveType::Float(_) => (":double", "double"),
+        PrimitiveType::Float(hir::FloatType::F32) => (":float", "float"),
+        PrimitiveType::Float(hir::FloatType::F64) => (":double", "double"),
         PrimitiveType::Char => (":uint", "char32_t"),
         PrimitiveType::Byte => (":uint8", "uint8_t"),
         PrimitiveType::Ordering => (":int", "int8_t"),
@@ -103,7 +104,8 @@ fn c_ty_to_jolt_kw(c_ty: &str) -> &'static str {
         "uint64_t" => ":uint64",
         "size_t" => ":size_t",
         "ssize_t" => ":ssize_t",
-        "double" | "float" => ":double",
+        "float" => ":float",
+        "double" => ":double",
         "void*" => ":pointer",
         _ => panic!("jolt-diplomat-backend: no jolt keyword for C type {c_ty}"),
     }
@@ -418,7 +420,7 @@ enum ReturnKind {
     Unit,
     Write,
     NullableWrite,
-    Fallible { is_write: bool },
+    Fallible { is_write: bool, is_unit: bool },
     BorrowedSlice { jolt_ty: &'static str, c_ty: &'static str, view_suffix: &'static str },
     StructReturn { name: String, fields: Vec<(String, FieldShape)> },
     NullablePrim { jolt_ty: &'static str, c_ty: &'static str },
@@ -443,6 +445,7 @@ fn classify_return(
 
         ReturnType::Fallible(st, _) => Some(ReturnKind::Fallible {
             is_write: matches!(st, SuccessType::Write),
+            is_unit: matches!(st, SuccessType::Unit),
         }),
 
         ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(
@@ -595,7 +598,11 @@ fn gen_method(
     let mut callback_wraps: Vec<String> = vec![];
 
     if has_self {
-        c_params.push(format!("const {owner}* self"));
+        let self_const = match &m.param_self {
+            Some(ps) if matches!(ps.ty, hir::SelfType::Opaque(ref o) if o.owner.mutability == hir::Mutability::Mutable) => "",
+            _ => "const ",
+        };
+        c_params.push(format!("{self_const}{owner}* self"));
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into() });
     }
 
@@ -782,7 +789,7 @@ fn gen_method(
         public_params.push(to_kebab(p.name.as_str()));
     }
 
-    let is_write = matches!(rk, ReturnKind::Write | ReturnKind::Fallible { is_write: true });
+    let is_write = matches!(rk, ReturnKind::Write | ReturnKind::Fallible { is_write: true, .. });
     let is_nullable_write = matches!(rk, ReturnKind::NullableWrite);
     let out_ptr_needed = matches!(rk, ReturnKind::Fallible { .. });
 
@@ -973,12 +980,17 @@ fn gen_method(
             body_lines.push("    )".to_string());           // closes let [s ...]
             body_lines.push("    (finally (ffi/free out))))".to_string());
         } else {
+            let ok_val = if matches!(rk, ReturnKind::Fallible { is_unit: true, .. }) {
+                "nil".to_string()
+            } else {
+                format!("(->{owner} (ffi/read out :pointer 0) false)")
+            };
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
             body_lines.push("  (try".to_string());
             body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
             body_lines.push("    (dr/unwrap-result!".to_string());
             body_lines.push("     (if (= 1 (ffi/read out :uint8 is-ok-off))".to_string());
-            body_lines.push(format!("       {{:ok? true :value (->{owner} (ffi/read out :pointer 0) false)}}"));
+            body_lines.push(format!("       {{:ok? true :value {ok_val}}}"));
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
             body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
             body_lines.push("    (finally (ffi/free out))))".to_string());

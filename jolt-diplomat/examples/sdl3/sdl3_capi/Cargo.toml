@@ -1,0 +1,14 @@
+[package]
+name = "sdl3-capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sdl3_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+sdl3 = { version = "0.18", features = [] }
+diplomat = { version = ">=0.14,<0.16" }
+diplomat-runtime = { version = ">=0.14,<0.16" }
+sdl3-ttf-sys = "0.6.1"
