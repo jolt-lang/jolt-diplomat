@@ -158,3 +158,85 @@ mod ffi {
 }
 
 unsafe impl Send for ffi::SdlApp {}
+
+// ── Audio stream ─────────────────────────────────────────────────────────────
+// Uses SDL3's push-audio API: Jolt fills f32 samples and calls put_samples()
+// each frame. No callback thread needed.
+#[diplomat::bridge]
+#[diplomat::abi_rename = "sdl3_{0}_mv1"]
+mod audio_ffi {
+    #[diplomat::opaque]
+    pub struct AudioStream {
+        dev: u32,
+        stream: *mut sdl3::sys::audio::SDL_AudioStream,
+    }
+
+    #[diplomat::opaque]
+    pub struct AudioError(String);
+
+    impl AudioError {
+        pub fn message(&self, write: &mut diplomat_runtime::DiplomatWrite) {
+            use std::fmt::Write as _;
+            let _ = write.write_str(&self.0);
+        }
+    }
+
+    impl AudioStream {
+        /// Open default audio device, stereo f32 at given sample rate.
+        pub fn open(sample_rate: i32) -> Result<Box<AudioStream>, Box<AudioError>> {
+            use sdl3::sys::audio::*;
+            use sdl3::sys::init::{SDL_InitSubSystem, SDL_INIT_AUDIO};
+            unsafe {
+                SDL_InitSubSystem(SDL_INIT_AUDIO);
+                let spec = SDL_AudioSpec {
+                    format: SDL_AUDIO_F32LE,
+                    channels: 2,
+                    freq: sample_rate,
+                };
+                // SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK = 0xFFFFFFFF
+                let dev = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec);
+                if dev.0 == 0 {
+                    return Err(Box::new(AudioError("SDL_OpenAudioDevice failed".into())));
+                }
+                let stream = SDL_CreateAudioStream(&spec, &spec);
+                if stream.is_null() {
+                    return Err(Box::new(AudioError("SDL_CreateAudioStream failed".into())));
+                }
+                let dev_id = sdl3::sys::audio::SDL_AudioDeviceID(dev.0);
+                SDL_BindAudioStream(dev_id, stream);
+                SDL_ResumeAudioDevice(dev_id);
+                Ok(Box::new(AudioStream { dev: dev.0, stream }))
+            }
+        }
+
+        /// Bytes currently queued in the audio stream.
+        pub fn queued_bytes(&self) -> i32 {
+            unsafe { sdl3::sys::audio::SDL_GetAudioStreamQueued(self.stream) }
+        }
+
+        /// Push interleaved stereo f32 samples. len = number of floats (frames*2).
+        pub fn put_samples(&self, samples: &[f32]) {
+            use sdl3::sys::audio::SDL_PutAudioStreamData;
+            unsafe {
+                let bytes = samples.len() * std::mem::size_of::<f32>();
+                SDL_PutAudioStreamData(
+                    self.stream,
+                    samples.as_ptr() as *const _,
+                    bytes as i32,
+                );
+            }
+        }
+    }
+
+    impl Drop for AudioStream {
+        fn drop(&mut self) {
+            use sdl3::sys::audio::*;
+            unsafe {
+                SDL_DestroyAudioStream(self.stream);
+                SDL_CloseAudioDevice(SDL_AudioDeviceID(self.dev));
+            }
+        }
+    }
+}
+
+unsafe impl Send for audio_ffi::AudioStream {}
