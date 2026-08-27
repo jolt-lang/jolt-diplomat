@@ -25,19 +25,33 @@
 (ffi/defcfn ^:private c-try-create
   "jolt_Thingy_try_create" [:string :size_t :pointer] :void)
 
+;; FIXED (severity #4, generation-phase): sizeof AND the is_ok offset must
+;; come from the same generated shim, both backed by the real C compiler's
+;; sizeof()/offsetof() against the actual struct — matching every other
+;; generated per-type file (see e.g. examples/regex/generated/diplomat/
+;; regex.clj's c-sizeof-create-result / c-is-ok-offset-create pair). The
+;; previous version fetched sz live but read is_ok from a hand-maintained
+;; generated-offsets.clj table — two independent numbers describing one
+;; struct, with nothing checking they still agreed. offsetof-generated
+;; shim replaces the static table; there is now exactly one source of
+;; truth for this struct's shape, so the two numbers can't drift apart.
 (ffi/defcfn ^:private c-sizeof-try-create-result
   "jolt_sizeof_try_create_result" [] :int)
+
+(ffi/defcfn ^:private c-is-ok-offset-try-create
+  "jolt_offsetof_Thingy_try_create_result_is_ok" [] :int)
 
 (defn try-create
   "Thingy/try_create(&str) -> Result<Box<Thingy>, ThingyError>"
   [s]
-  (let [sz  (c-sizeof-try-create-result)
-        out (ffi/alloc sz)]
+  (let [sz        (c-sizeof-try-create-result)
+        out       (ffi/alloc sz)
+        is-ok-off (c-is-ok-offset-try-create)]
     (try
       (c-try-create s (count s) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 8)) ;; is_ok at offset 8 (union at 0, bool at 8)
-         {:ok? true :value (->Thingy (ffi/read out :pointer 0) false)}
+       (if (= 1 (ffi/read out :uint8 is-ok-off))
+         {:ok? true :value (->Thingy (ffi/read out :pointer 0) (atom false))}
          {:ok? false :error (ffi/read out :int 0)}) ;; err shares the union slot
        "Thingy/try-create")
       (finally (ffi/free out)))))
@@ -62,13 +76,11 @@
 (ffi/defcfn ^:private c-describe
   "jolt_Thingy_describe" [:pointer :int :double :pointer] :void)
 
-(ffi/defcfn ^:private c-simple-write
-  "jolt_diplomat_simple_write" [:pointer :size_t :pointer] :void)
-  ;; diplomat_simple_write ALSO returns DiplomatWrite by value — routed
-  ;; through the same shim pattern. Confirmed the hard way: declaring it
-  ;; directly as returning :pointer from Jolt does not error, it silently
-  ;; reads garbage (SysV ABI hidden out-pointer for >16-byte struct
-  ;; returns). NEVER defcfn a struct-returning C symbol directly.
+;; CLEANUP: this file used to defcfn its own private c-simple-write binding
+;; to jolt_diplomat_simple_write — the exact same C symbol and signature
+;; runtime.clj already binds and wraps as dr/simple-write!. Two FFI
+;; bindings to one symbol per generated per-type file was pure codegen
+;; duplication; now reuses the shared wrapper instead of re-declaring it.
 
 (defn describe
   "Thingy::describe(&self, ThingyOptions, &mut DiplomatWrite)"
@@ -76,14 +88,13 @@
   (let [buf (ffi/alloc 256)
         w   (ffi/alloc dr/writeable-struct-size)]
     (try
-      (c-simple-write buf 256 w) ;; NEVER hand-assemble this struct — a
-                                  ;; hand-built version with null flush/grow
-                                  ;; crashes ("invalid memory reference"),
-                                  ;; verified directly; Diplomat's writer
-                                  ;; calls flush unconditionally to finalize.
+      (dr/simple-write! buf 256 w) ;; NEVER hand-assemble this struct — a
+                                    ;; hand-built version with null flush/grow
+                                    ;; crashes ("invalid memory reference"),
+                                    ;; verified directly; Diplomat's writer
+                                    ;; calls flush unconditionally to finalize.
       (c-describe (:ptr this) (if verbose 1 0) (double scale) w)
-      (let [n (ffi/read w :size_t dr/O-len)]
-        (ffi/read-bytes buf n))
+      (dr/read-writeable! buf w "Thingy/describe")
       (finally (ffi/free buf) (ffi/free w)))))
 
 ;; --- slice param, copied not borrowed --------------------------------------
@@ -94,9 +105,9 @@
   "Thingy::sum_with(&self, &[u8]) -> u32. `others` is COPIED across the
   boundary by Diplomat's own model, not borrowed."
   [^Thingy this others]
-  (let [n   (count others)
-        buf (ffi/alloc n)]
-    (try
-      (dotimes [i n] (ffi/write buf :uint8 i (nth others i)))
-      (c-sum-with (:ptr this) buf n)
-      (finally (ffi/free buf)))))
+  ;; CLEANUP: replaces a hand-rolled alloc/write/free loop with
+  ;; dr/with-primitive-buffer, which already generalizes this marshal (and
+  ;; already guards the zero-length case per severity #3 — (max n 1) —
+  ;; instead of that guard being re-derived here too).
+  (dr/with-primitive-buffer [buf :uint8 others]
+    (c-sum-with (:ptr this) buf (count others))))

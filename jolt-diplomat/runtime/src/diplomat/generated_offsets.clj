@@ -28,3 +28,12 @@
     :scale 8
     }})
 
+;; NOTE (severity #4, superseded): a thingy-try-create-result-layout entry
+;; used to live here, hand-copying Thingy_try_create_result's is_ok
+;; offset into a static table. Removed — every real generated crate
+;; (examples/regex, examples/base64, ...) instead fetches per-struct
+;; sizeof/offsetof from a generated C shim at load time
+;; (jolt_sizeof_*_result / jolt_offsetof_*_result_is_ok), which is the
+;; actual codegen contract this file's own docstring describes. thingy.clj
+;; now follows that pattern instead of duplicating it here.
+

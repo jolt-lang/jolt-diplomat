@@ -30,6 +30,16 @@
 (defprotocol Closeable
   (close! [this]))
 
+;; FIXED (severity #1): `closed?` used to be a plain record field, flipped
+;; via `(assoc obj# :closed? true)` — assoc returns a NEW record, so the
+;; caller's original binding never observed the flag change. The
+;; `^:volatile-mutable` hint on the field was also inert: defrecord (unlike
+;; deftype) has no mutable-field support, so it was silently dropped. Net
+;; effect: the "already closed?" guard never actually guarded anything,
+;; and a second close! on the same binding called the C destroy fn again
+;; (double-free / use-after-free). Fix: hold the flag in an atom, which is
+;; the same object no matter how many times the record is copied/rebound —
+;; the guard now actually shares state across all refs to one opaque value.
 (defmacro defopaque
   "Defines a record wrapping a foreign pointer plus a destroy fn, extended
   to the Closeable protocol so close! dispatches correctly regardless of
@@ -40,16 +50,15 @@
     (defopaque Thingy \"Thingy_destroy\")"
   [type-sym destroy-symbol]
   `(do
-     (defrecord ~type-sym [~'ptr ~'^:volatile-mutable closed?])
+     (defrecord ~type-sym [~'ptr ~'closed-atom])
 
      (ffi/defcfn ~(symbol (str "c-" (name type-sym) "-destroy")) ~destroy-symbol [:pointer] :void)
 
      (extend-type ~type-sym
        Closeable
        (close! [obj#]
-         (when-not (:closed? obj#)
-           (~(symbol (str "c-" (name type-sym) "-destroy")) (:ptr obj#))
-           (assoc obj# :closed? true))))))
+         (when (compare-and-set! (:closed-atom obj#) false true)
+           (~(symbol (str "c-" (name type-sym) "-destroy")) (:ptr obj#)))))))
 
 (defmacro with-opaque
   "Like with-open, scoped to a Diplomat opaque value. Always closes even on
@@ -183,6 +192,24 @@
   [buf cap w]
   (c-simple-write buf cap w))
 
+;; FIXED (severity #2, deduped): the grow_failed check — read the flag,
+;; throw with the caller's label if truncation happened, else read back
+;; the actual bytes — was hand-repeated at every writeable-out callsite
+;; (writeable-capture, writeable-capture-when, and thingy.clj's describe).
+;; One helper now; a new per-type generated file gets this by calling it,
+;; not by re-deriving the 3-line if/throw/else pattern again.
+(defn read-writeable!
+  "After calling into Rust with buf/w as the writeable-out args, reads
+  back the bytes Rust wrote — or throws if the fixed-size buf couldn't
+  hold the output (DiplomatWrite's grow_failed flag). label names the
+  call for the exception message."
+  [buf w label]
+  (if (not= 0 (ffi/read w :uint8 O-grow-failed))
+    (throw (ex-info (str label ": buffer grow failed, output truncated")
+                     {:diplomat/buffer-size initial-buffer-size}))
+    (let [n (ffi/read w :size_t O-len)]
+      (ffi/read-bytes buf n))))
+
 (defn writeable-capture
   "Calls f with a fresh DiplomatWrite pointer as its writeable-out
   argument, and returns the UTF-8 string Rust wrote into it. f is a fn of
@@ -207,8 +234,7 @@
     (try
       (c-simple-write buf initial-buffer-size w) ;; NOT hand-assembled
       (f w)
-      (let [n (ffi/read w :size_t O-len)]
-        (ffi/read-bytes buf n))
+      (read-writeable! buf w "writeable-capture")
       (finally
         (ffi/free buf)
         (ffi/free w)))))
@@ -227,8 +253,7 @@
     (try
       (c-simple-write buf initial-buffer-size w)
       (when (not= 0 (f w))
-        (let [n (ffi/read w :size_t O-len)]
-          (ffi/read-bytes buf n)))
+        (read-writeable! buf w "writeable-capture-when"))
       (finally
         (ffi/free buf)
         (ffi/free w)))))

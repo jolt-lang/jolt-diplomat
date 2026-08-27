@@ -131,14 +131,16 @@ fn prim_to_diplomat_view_suffix(p: &PrimitiveType) -> &'static str {
     }
 }
 
-/// Emit `(->{Target} call owns?)`, qualifying with the alias when Target != owner.
+/// Emit `(->{Target} call (atom owns?))`, qualifying with the alias when
+/// Target != owner. closed-atom must be an atom (compare-and-set!'d by
+/// close!), not a bare bool — see runtime.clj's defopaque.
 fn emit_opaque_wrap(target: &str, owner: &str, call: &str, owns: bool) -> String {
     let owns_str = if owns { "true" } else { "false" };
     if target != owner {
         let alias = to_kebab(target);
-        format!("({alias}/->{target} {call} {owns_str})")
+        format!("({alias}/->{target} {call} (atom {owns_str}))")
     } else {
-        format!("(->{target} {call} {owns_str})")
+        format!("(->{target} {call} (atom {owns_str}))")
     }
 }
 
@@ -963,10 +965,11 @@ fn gen_method(
         let _ = writeln!(out, "(ffi/defcfn ^:private c-is-ok-offset-{fn_name} \"{result_is_ok_offset_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {result_sizeof_sym}(void) {{ return sizeof({result_c_ty}); }}");
         let _ = writeln!(shim_c, "size_t {result_is_ok_offset_sym}(void) {{ return offsetof({result_c_ty}, is_ok); }}");
-        // Fix 1: error opaques are owned (closed?=false), not already-freed (closed?=true).
+        // Fix 1: error opaques are owned (closed-atom=(atom false)), not
+        // already-freed ((atom true)).
         let err_read = match &opaque_error {
             Some((err_name, err_alias)) =>
-                format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) false)"),
+                format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) (atom false))"),
             None => "(ffi/read out :int 0)".to_string(),
         };
         if is_write {
@@ -986,7 +989,7 @@ fn gen_method(
             let ok_val = if matches!(rk, ReturnKind::Fallible { is_unit: true, .. }) {
                 "nil".to_string()
             } else {
-                format!("(->{owner} (ffi/read out :pointer 0) false)")
+                format!("(->{owner} (ffi/read out :pointer 0) (atom false))")
             };
             body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
             body_lines.push("  (try".to_string());
@@ -1069,3 +1072,16 @@ fn gen_enum_clj(en: &hir::EnumDef) -> String {
     let _ = writeln!(out, "(def int->kw (clojure.set/map-invert kw->int))");
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::emit_opaque_wrap;
+
+    #[test]
+    fn opaque_wrap_uses_atom_not_bare_bool() {
+        assert_eq!(emit_opaque_wrap("Thingy", "Thingy", "p", false), "(->Thingy p (atom false))");
+        assert_eq!(emit_opaque_wrap("Thingy", "Thingy", "p", true), "(->Thingy p (atom true))");
+        assert_eq!(emit_opaque_wrap("Other", "Owner", "p", false), "(other/->Other p (atom false))");
+    }
+}
+

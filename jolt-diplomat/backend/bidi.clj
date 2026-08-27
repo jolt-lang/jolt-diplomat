@@ -8,7 +8,7 @@
 (dr/defopaque Bidi "Bidi_destroy")
 
 (ffi/defcfn ^:private c-create "Bidi_create" [] :pointer)
-(defn create [] (->Bidi (c-create ) false))
+(defn create [] (->Bidi (c-create ) (atom false)))
 
 (ffi/defcfn ^:private c-create-with-provider "jolt_Bidi_create_with_provider" [:pointer :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-create-with-provider-result "jolt_sizeof_Bidi_create_with_provider_result" [] :int)
@@ -18,7 +18,7 @@
       (c-create-with-provider (:ptr provider) out)
       (dr/unwrap-result!
        (if (= 1 (ffi/read out :uint8 8))
-         {:ok? true :value (->Bidi (ffi/read out :pointer 0) false)}
+         {:ok? true :value (->Bidi (ffi/read out :pointer 0) (atom false))}
          {:ok? false :error (ffi/read out :int 0)})
        "Bidi/create-with-provider")
       (finally (ffi/free out))))

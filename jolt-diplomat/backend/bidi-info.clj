@@ -12,7 +12,7 @@
 (defn paragraph-count [self] (c-paragraph-count (:ptr self)))
 
 (ffi/defcfn ^:private c-paragraph-at "BidiInfo_paragraph_at" [:pointer :size_t] :pointer)
-(defn paragraph-at [self n] (bidi-paragraph/->BidiParagraph (c-paragraph-at (:ptr self) n) false))
+(defn paragraph-at [self n] (bidi-paragraph/->BidiParagraph (c-paragraph-at (:ptr self) n) (atom false)))
 
 (ffi/defcfn ^:private c-size "BidiInfo_size" [:pointer] :size_t)
 (defn size [self] (c-size (:ptr self)))
