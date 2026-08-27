@@ -22,6 +22,15 @@ mod ffi {
         }
     }
 
+    fn to_tunes_waveform(wf: Waveform) -> TunesWaveform {
+        match wf {
+            Waveform::Sine     => TunesWaveform::Sine,
+            Waveform::Square   => TunesWaveform::Square,
+            Waveform::Sawtooth => TunesWaveform::Sawtooth,
+            Waveform::Triangle => TunesWaveform::Triangle,
+        }
+    }
+
     #[diplomat::opaque_mut]
     pub struct TunesMixer(Mixer);
 
@@ -37,12 +46,7 @@ mod ffi {
             duration: f32,
             waveform: Waveform,
         ) {
-            let wf = match waveform {
-                Waveform::Sine     => TunesWaveform::Sine,
-                Waveform::Square   => TunesWaveform::Square,
-                Waveform::Sawtooth => TunesWaveform::Sawtooth,
-                Waveform::Triangle => TunesWaveform::Triangle,
-            };
+            let wf = to_tunes_waveform(waveform);
             let mut track = Track::new();
             track.add_note_with_waveform(&[freq_hz], start_time, duration, wf);
             self.0.add_track(track);
@@ -55,12 +59,7 @@ mod ffi {
             duration: f32,
             waveform: Waveform,
         ) {
-            let wf = match waveform {
-                Waveform::Sine     => TunesWaveform::Sine,
-                Waveform::Square   => TunesWaveform::Square,
-                Waveform::Sawtooth => TunesWaveform::Sawtooth,
-                Waveform::Triangle => TunesWaveform::Triangle,
-            };
+            let wf = to_tunes_waveform(waveform);
             let mut track = Track::new();
             track.add_note_with_waveform(freqs, start_time, duration, wf);
             self.0.add_track(track);

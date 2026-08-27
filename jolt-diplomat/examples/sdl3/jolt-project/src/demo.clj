@@ -3,7 +3,6 @@
             [diplomat.sdl-app :as app]
             [diplomat.audio-stream :as audio]
             [diplomat.tunes-mixer :as tunes]
-            [diplomat.tunes-error :as tunes-error]
             [jolt.ffi :as ffi]))
 
 (require '[jolt.host :as host])
@@ -200,17 +199,16 @@
           [nr ng nb] (nth (WF-COLORS wf) (if dragging? 1 0))
           x (beat->x beat scroll-beat zoom)
           y (note->y pitch scroll-note)
-          nw (* dur BEAT-W zoom)]
+          nw (* dur BEAT-W zoom)
+          x1 (max x KEY-W)
+          x2 (min (+ x nw) W)
+          dw (- x2 x1)]
       (when (and (< x W) (> (+ x nw) KEY-W)
                  (>= y HEADER-H) (< y H))
         (app/set-draw-color ctx nr ng nb 220)
-        (app/fill-rect ctx
-                       (float (max x KEY-W)) (float (+ y 1))
-                       (float (min nw (- W (max x KEY-W)))) (float (- NOTE-H 2)))
+        (app/fill-rect ctx (float x1) (float (+ y 1)) (float dw) (float (- NOTE-H 2)))
         (app/set-draw-color ctx 255 255 255 180)
-        (app/draw-rect ctx
-                       (float (max x KEY-W)) (float (+ y 1))
-                       (float (min nw (- W (max x KEY-W)))) (float (- NOTE-H 2)))))))
+        (app/draw-rect ctx (float x1) (float (+ y 1)) (float dw) (float (- NOTE-H 2)))))))
 
 (defn draw-playhead [ctx play-beat scroll-beat zoom]
   (let [x (beat->x play-beat scroll-beat zoom)]
@@ -289,11 +287,10 @@
                                (assoc s :playing false :mixer nil)))
 
                            (= kc KC-E)
-                           (do
-                             (let [path (str (host/getenv "HOME") "/piano-roll.wav")]
-                               (dr/with-opaque [m (build-mixer notes)]
-                                 (tunes/export-wav m path SAMPLE-RATE))
-                               (println (str "Exported: " path)))
+                           (let [path (str (host/getenv "HOME") "/piano-roll.wav")]
+                             (dr/with-opaque [m (build-mixer notes)]
+                               (tunes/export-wav m path SAMPLE-RATE))
+                             (println (str "Exported: " path))
                              s)
 
                            :else s))
