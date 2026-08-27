@@ -646,15 +646,18 @@ fn gen_method(
                 arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
                 call_args.push(format!("(DiplomatString16View){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
-            Type::Slice(hir::Slice::Primitive(_, prim)) => {
+            Type::Slice(hir::Slice::Primitive(borrow, prim)) => {
                 let (jolt_ty, c_ty) = prim_to_jolt_and_c(prim);
                 let view_suffix = prim_to_diplomat_view_suffix(prim);
-                c_params.push(format!("const {c_ty}* {cname}_data"));
+                let is_mut = borrow.as_borrowed().map(|b| b.mutability == hir::Mutability::Mutable).unwrap_or(false);
+                let const_kw = if is_mut { "" } else { "const " };
+                let view_mut = if is_mut { "Mut" } else { "" };
+                c_params.push(format!("{const_kw}{c_ty}* {cname}_data"));
                 c_params.push(format!("size_t {cname}_len"));
                 arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("{pname}-buf") });
                 arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
                 buffer_wraps.push((format!("{pname}-buf"), jolt_ty.to_string(), pname.clone()));
-                call_args.push(format!("(Diplomat{view_suffix}View){{ .data = {cname}_data, .len = {cname}_len }}"));
+                call_args.push(format!("(Diplomat{view_suffix}View{view_mut}){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
             Type::Struct(_) => {
                 let shape = match resolve_field_shape(tcx, &p.ty, extra_requires) {

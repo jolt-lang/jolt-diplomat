@@ -1,0 +1,13 @@
+[package]
+name = "tunes_capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tunes_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+diplomat = { version = ">=0.14,<0.16" }
+diplomat-runtime = { version = ">=0.14,<0.16" }
+tunes = "1.1.0"

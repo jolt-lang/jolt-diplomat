@@ -1,11 +1,16 @@
 (ns demo
   (:require [diplomat.runtime :as dr]
             [diplomat.sdl-app :as app]
-            [diplomat.audio-stream :as audio]))
+            [diplomat.audio-stream :as audio]
+            [diplomat.tunes-mixer :as tunes]
+            [diplomat.tunes-error :as tunes-error]
+            [jolt.ffi :as ffi]))
 
 (require '[jolt.host :as host])
-(def demo-dir (str (host/getenv "PWD") "/.."))
-(dr/load! demo-dir "sdl3_capi")
+(def sdl3-dir (str (host/getenv "PWD") "/.."))
+(def tunes-dir (str (host/getenv "PWD") "/../../tunes"))
+(dr/load! sdl3-dir "sdl3_capi")
+(dr/load! tunes-dir "tunes_capi")
 
 ;; ── constants ──────────────────────────────────────────────────────────────
 (def W 1200)
@@ -36,6 +41,7 @@
 (def KC-PLUS 61)
 (def KC-MINUS 45)
 (def KC-SPACE 32)
+(def KC-E 101)
 
 (def MB-LEFT 1)
 (def MB-RIGHT 3)
@@ -44,37 +50,56 @@
 (def SAMPLE-RATE 44100)
 (def CHANNELS 2)
 (def FRAME-SAMPLES 256)
-(def MAX-QUEUED-BYTES (* FRAME-SAMPLES CHANNELS 4 2))  ; keep ≤2 frames ahead
+(def MAX-QUEUED-BYTES (* FRAME-SAMPLES CHANNELS 4 8))  ; ~23ms at 44100
+
+(def BPM 120.0)
+(def SEC-PER-BEAT (/ 60.0 BPM))
 
 (defn midi->hz [midi]
   (* 440.0 (Math/pow 2.0 (/ (- midi 69.0) 12.0))))
 
-;; per-voice state: {:freq :phase :vel}
-(defn make-voice [pitch]
-  {:freq (midi->hz pitch) :phase 0.0 :vel 0.8})
+(ffi/defcfn ^:private c-process-block
+  "jolt_tunes_TunesMixer_process_block_mv1"
+  [:pointer :pointer :size_t :float :float] :void)
 
-(defn synth-frame
-  "Generate FRAME-SAMPLES stereo f32 frames for all active voices.
-   Returns [samples updated-voices]."
-  [voices]
-  (let [n (* FRAME-SAMPLES CHANNELS)
-        buf (float-array n 0.0)
-        dt (/ 1.0 SAMPLE-RATE)
-        voices' (mapv (fn [{:keys [freq phase vel] :as v}]
-                        (let [phase-step (* freq dt 2.0 Math/PI)]
-                          (dotimes [i FRAME-SAMPLES]
-                            (let [s (* vel (Math/sin (+ phase (* i phase-step))))
-                                  idx (* i CHANNELS)]
-                              (aset buf idx (float (+ (aget buf idx) s)))
-                              (aset buf (inc idx) (float (+ (aget buf (inc idx)) s)))))
-                          (assoc v :phase (mod (+ phase (* FRAME-SAMPLES phase-step))
-                                               (* 2.0 Math/PI)))))
-                      voices)]
-    ;; normalize if clipping
-    (let [peak (reduce max 0.0 (map #(Math/abs %) buf))]
-      (when (> peak 1.0)
-        (dotimes [i n] (aset buf i (float (/ (aget buf i) peak))))))
-    [(vec buf) voices']))
+(defn process-block! [mixer ptr n sample-rate start-time]
+  (c-process-block (:ptr mixer) ptr n sample-rate start-time))
+
+;; bypass with-primitive-buffer — ptr already native, zero copies
+(ffi/defcfn ^:private c-put-samples-raw
+  "jolt_sdl3_AudioStream_put_samples_mv1"
+  [:pointer :pointer :size_t] :void)
+
+(defn put-samples-raw! [aud ptr n]
+  (c-put-samples-raw (:ptr aud) ptr n))
+
+;; ── waveform toolbar ───────────────────────────────────────────────────────
+(def WAVEFORMS [:sine :square :sawtooth :triangle])
+(def WF-LABELS {:sine "Sine" :square "Square" :sawtooth "Saw" :triangle "Tri"})
+
+;; note fill colors [normal-rgb dragging-rgb] per waveform
+(def WF-COLORS
+  {:sine [[80 170 255] [120 200 255]]
+   :square [[80 220 120] [120 255 160]]
+   :sawtooth [[220 120 80] [255 160 120]]
+   :triangle [[200 80 220] [240 120 255]]})
+
+;; toolbar: 4 buttons, each ~70px wide, starting at x=KEY-W+4
+(def BTN-W 68)
+(def BTN-H 22)
+(def BTN-Y 4)
+(def BTN-X0 (+ KEY-W 4))
+
+(defn btn-rect [i]
+  [(+ BTN-X0 (* i (+ BTN-W 4))) BTN-Y BTN-W BTN-H])
+
+(defn toolbar-hit [mx my]
+  (when (and (>= my BTN-Y) (< my (+ BTN-Y BTN-H)))
+    (first (keep-indexed (fn [i wf]
+                           (let [[bx _ bw _] (btn-rect i)]
+                             (when (and (>= mx bx) (< mx (+ bx bw)))
+                               wf)))
+                         WAVEFORMS))))
 
 ;; ── helpers ────────────────────────────────────────────────────────────────
 (def NOTE-NAMES ["C" "C#" "D" "D#" "E" "F" "F#" "G" "G#" "A" "A#" "B"])
@@ -124,6 +149,23 @@
         (when (= 0 (mod midi 12))
           (app/draw-text ctx (note-name midi) 4.0 (float (+ y 1)) 30 30 30 255))))))
 
+(defn draw-toolbar [ctx selected-wf]
+  (doseq [[i wf] (map-indexed vector WAVEFORMS)]
+    (let [[bx by bw bh] (btn-rect i)
+          active? (= wf selected-wf)
+          [r g b] (first (WF-COLORS wf))]
+      (if active?
+        (app/set-draw-color ctx r g b 255)
+        (app/set-draw-color ctx 40 40 50 255))
+      (app/fill-rect ctx (float bx) (float by) (float bw) (float bh))
+      (app/set-draw-color ctx (if active? 255 r) (if active? 255 g) (if active? 255 b) 255)
+      (app/draw-rect ctx (float bx) (float by) (float bw) (float bh))
+      (app/draw-text ctx (WF-LABELS wf) (float (+ bx 4)) (float (+ by 6))
+                     (if active? 10 r)
+                     (if active? 10 g)
+                     (if active? 10 b)
+                     255))))
+
 (defn draw-grid [ctx scroll-beat scroll-note zoom]
   (app/set-draw-color ctx 28 28 35 255)
   (app/fill-rect ctx (float KEY-W) (float HEADER-H)
@@ -152,50 +194,58 @@
 (defn draw-notes [ctx notes drag scroll-beat scroll-note zoom]
   (doseq [note notes]
     (let [dragging? (and drag (= note (:orig drag)))
-          {:keys [pitch beat dur]} (if dragging? (:note drag) note)
+          display (if dragging? (:note drag) note)
+          {:keys [pitch beat dur waveform]} display
+          wf (or waveform :sine)
+          [nr ng nb] (nth (WF-COLORS wf) (if dragging? 1 0))
           x (beat->x beat scroll-beat zoom)
           y (note->y pitch scroll-note)
           nw (* dur BEAT-W zoom)]
       (when (and (< x W) (> (+ x nw) KEY-W)
                  (>= y HEADER-H) (< y H))
-        (app/set-draw-color ctx
-                            (if dragging? 120 80)
-                            (if dragging? 200 170)
-                            (if dragging? 255 255)
-                            220)
+        (app/set-draw-color ctx nr ng nb 220)
         (app/fill-rect ctx
                        (float (max x KEY-W)) (float (+ y 1))
                        (float (min nw (- W (max x KEY-W)))) (float (- NOTE-H 2)))
-        (app/set-draw-color ctx 160 220 255 255)
+        (app/set-draw-color ctx 255 255 255 180)
         (app/draw-rect ctx
                        (float (max x KEY-W)) (float (+ y 1))
                        (float (min nw (- W (max x KEY-W)))) (float (- NOTE-H 2)))))))
 
+(defn draw-playhead [ctx play-beat scroll-beat zoom]
+  (let [x (beat->x play-beat scroll-beat zoom)]
+    (when (and (> x KEY-W) (< x W))
+      (app/set-draw-color ctx 255 80 80 200)
+      (app/draw-line ctx (float x) (float HEADER-H) (float x) (float H)))))
+
 ;; ── state machine ──────────────────────────────────────────────────────────
-(defn handle-mdown [notes mx my mb scroll-beat scroll-note zoom]
-  (when (and (> mx KEY-W) (> my HEADER-H))
-    (let [hit (note-at notes mx my scroll-beat scroll-note zoom)]
-      (cond
-        (= mb MB-RIGHT)
-        (when hit {:notes (vec (remove #(= % hit) notes))})
+(defn handle-mdown [notes mx my mb scroll-beat scroll-note zoom selected-wf]
+  ;; toolbar click in header
+  (if (< my HEADER-H)
+    (when-let [wf (toolbar-hit mx my)]
+      {:selected-waveform wf})
+    ;; piano roll click
+    (when (> mx KEY-W)
+      (let [hit (note-at notes mx my scroll-beat scroll-note zoom)]
+        (cond
+          (= mb MB-RIGHT)
+          (when hit {:notes (vec (remove #(= % hit) notes))})
 
-        (and (= mb MB-LEFT) hit)
-        (let [offset (- (x->beat mx scroll-beat zoom) (:beat hit))]
-          {:drag {:orig hit :note hit :offset offset} :notes notes})
+          (and (= mb MB-LEFT) hit)
+          (let [offset (- (x->beat mx scroll-beat zoom) (:beat hit))]
+            {:drag {:orig hit :note hit :offset offset} :notes notes})
 
-        (= mb MB-LEFT)
-        (let [beat (snap (x->beat mx scroll-beat zoom))
-              pitch (y->note my scroll-note)]
-          (when (and (>= pitch BOT-NOTE) (<= pitch TOP-NOTE) (>= beat 0))
-            {:notes (conj notes {:pitch pitch :beat beat :dur 1})}))))))
+          (= mb MB-LEFT)
+          (let [beat (snap (x->beat mx scroll-beat zoom))
+                pitch (y->note my scroll-note)]
+            (when (and (>= pitch BOT-NOTE) (<= pitch TOP-NOTE) (>= beat 0))
+              {:notes (conj notes {:pitch pitch :beat beat :dur 1 :waveform selected-wf})})))))))
 
 (defn handle-mmove [drag mx my scroll-beat scroll-note zoom]
   (when drag
     (let [raw-beat (- (x->beat mx scroll-beat zoom) (:offset drag))
           new-beat (max 0 (snap raw-beat))
-          new-pitch (-> (y->note my scroll-note)
-                        (max BOT-NOTE)
-                        (min TOP-NOTE))
+          new-pitch (-> (y->note my scroll-note) (max BOT-NOTE) (min TOP-NOTE))
           updated (assoc (:note drag) :beat new-beat :pitch new-pitch)]
       {:drag (assoc drag :note updated)})))
 
@@ -204,29 +254,68 @@
     {:drag nil
      :notes (vec (map #(if (= % (:orig drag)) (:note drag) %) notes))}))
 
-;; ── main loop ─────────────────────────────────────────────────────────────
+;; ── tunes mixer ────────────────────────────────────────────────────────────
+(defn build-mixer [notes]
+  (let [mixer (tunes/new BPM)]
+    (tunes/disable-cache mixer)
+    (doseq [{:keys [pitch beat dur waveform]} notes]
+      (tunes/add-note mixer (midi->hz pitch)
+                      (* beat SEC-PER-BEAT)
+                      (* dur SEC-PER-BEAT)
+                      (or waveform :sine)))
+    mixer))
+
+;; ── main loop ──────────────────────────────────────────────────────────────
 (defn drain-events [ctx state]
   (let [ev (app/poll-event ctx)
         k (:kind ev)]
     (if (= k EVT-NONE)
       state
-      (let [state' (let [{:keys [notes drag held scroll-beat scroll-note zoom]} state]
+      (let [state' (let [{:keys [notes drag held scroll-beat scroll-note zoom mixer selected-waveform]} state]
                      (cond
-                       (= k EVT-QUIT) (assoc state :quit true)
-                       (= k EVT-KEYDN) (let [kc (:key-code ev)
-                                             s (assoc state :held (conj held kc))]
-                                         (if (= kc KC-SPACE)
-                                           (assoc s :playing (not (:playing state)) :play-beat 0.0 :voices [])
-                                           s))
-                       (= k EVT-KEYUP) (assoc state :held (disj held (:key-code ev)))
-                       (= k EVT-MDOWN) (let [r (handle-mdown notes (:mouse-x ev) (:mouse-y ev)
-                                                             (:mouse-button ev) scroll-beat scroll-note zoom)]
-                                         (if r (merge state r) state))
-                       (= k EVT-MMOVE) (let [r (handle-mmove drag (:mouse-x ev) (:mouse-y ev)
-                                                             scroll-beat scroll-note zoom)]
-                                         (if r (merge state r) state))
-                       (= k EVT-MUP) (let [r (handle-mup drag notes)]
-                                       (if r (merge state r) state))
+                       (= k EVT-QUIT)
+                       (do (when mixer (dr/close! mixer)) (assoc state :quit true :mixer nil))
+
+                       (= k EVT-KEYDN)
+                       (let [kc (:key-code ev)
+                             s (assoc state :held (conj held kc))]
+                         (cond
+                           (= kc KC-SPACE)
+                           (let [playing' (not (:playing state))]
+                             (when mixer (dr/close! mixer))
+                             (if playing'
+                               (assoc s :playing true :play-beat 0.0
+                                      :mixer (build-mixer notes))
+                               (assoc s :playing false :mixer nil)))
+
+                           (= kc KC-E)
+                           (do
+                             (let [path (str (host/getenv "HOME") "/piano-roll.wav")]
+                               (dr/with-opaque [m (build-mixer notes)]
+                                 (tunes/export-wav m path SAMPLE-RATE))
+                               (println (str "Exported: " path)))
+                             s)
+
+                           :else s))
+
+                       (= k EVT-KEYUP)
+                       (assoc state :held (disj held (:key-code ev)))
+
+                       (= k EVT-MDOWN)
+                       (let [r (handle-mdown notes (:mouse-x ev) (:mouse-y ev)
+                                             (:mouse-button ev) scroll-beat scroll-note zoom
+                                             selected-waveform)]
+                         (if r (merge state r) state))
+
+                       (= k EVT-MMOVE)
+                       (let [r (handle-mmove drag (:mouse-x ev) (:mouse-y ev)
+                                             scroll-beat scroll-note zoom)]
+                         (if r (merge state r) state))
+
+                       (= k EVT-MUP)
+                       (let [r (handle-mup drag notes)]
+                         (if r (merge state r) state))
+
                        :else state))]
         (recur ctx state')))))
 
@@ -243,78 +332,63 @@
                        (held KC-MINUS) (max 0.2 (* zoom 0.97))
                        :else zoom))))
 
-;; BPM → beats per frame (assuming ~60fps)
-(def BPM 120.0)
-(def BEATS-PER-FRAME (/ BPM 60.0 60.0))
+(def BLOCK-DUR-S (/ FRAME-SAMPLES (float SAMPLE-RATE)))
+(def BLOCK-DUR-BEATS (* BLOCK-DUR-S (/ BPM 60.0)))
 
-(defn notes-starting-at [notes beat]
-  "Notes whose start beat is within [beat, beat+BEATS-PER-FRAME)."
-  (filter (fn [{b :beat}]
-            (and (>= beat b) (< beat (+ b BEATS-PER-FRAME))))
-          notes))
-
-(defn tick-audio [state aud]
+(defn tick-audio [state aud block-ptr]
   (if-not (:playing state)
     state
-    (let [{:keys [notes play-beat voices]} state
-          ;; activate voices for notes starting this frame
-          new-voices (map #(make-voice (:pitch %)) (notes-starting-at notes play-beat))
-          ;; expire voices whose note has ended
-          active (filter (fn [{:keys [freq]}]
-                           (some (fn [{b :beat d :dur p :pitch}]
-                                   (and (= (midi->hz p) freq)
-                                        (< play-beat (+ b d))))
-                                 notes))
-                         voices)
-          all-voices (concat active new-voices)
-          [samples voices'] (if (seq all-voices)
-                              (synth-frame (vec all-voices))
-                              [[] []])
-          next-beat (+ play-beat BEATS-PER-FRAME)
-          max-beat (apply max 0 (map #(+ (:beat %) (:dur %)) notes))]
-      (when (and (seq samples)
-                 (< (audio/queued-bytes aud) MAX-QUEUED-BYTES))
-        (audio/put-samples aud samples))
-      (assoc state
-             :voices voices'
-             :play-beat (if (>= next-beat max-beat) 0.0 next-beat)
-             :playing (< next-beat max-beat)))))
-
-(defn draw-playhead [ctx play-beat scroll-beat zoom]
-  (let [x (beat->x play-beat scroll-beat zoom)]
-    (when (and (> x KEY-W) (< x W))
-      (app/set-draw-color ctx 255 80 80 200)
-      (app/draw-line ctx (float x) (float HEADER-H) (float x) (float H)))))
+    (let [{:keys [notes mixer]} state
+          max-beat (apply max 1 (map #(+ (:beat %) (:dur %)) notes))
+          n (* FRAME-SAMPLES CHANNELS)]
+      ;; push blocks until queue has at least MAX-QUEUED-BYTES ahead
+      (loop [play-beat (:play-beat state)]
+        (if (>= (audio/queued-bytes aud) MAX-QUEUED-BYTES)
+          (assoc state :play-beat play-beat)
+          (let [start-s (* play-beat SEC-PER-BEAT)
+                next-beat (+ play-beat BLOCK-DUR-BEATS)]
+            (process-block! mixer block-ptr n (float SAMPLE-RATE) (float start-s))
+            (put-samples-raw! aud block-ptr n)
+            (if (>= next-beat max-beat)
+              (do (dr/close! mixer)
+                  (assoc state :playing false :play-beat 0.0 :mixer nil))
+              (recur next-beat))))))))
 
 (defn run []
   (dr/with-opaque [ctx (app/create "Piano Roll" W H)]
     (dr/with-opaque [aud (audio/open SAMPLE-RATE)]
       (app/load-font ctx FONT 11)
-      (loop [state {:notes [{:pitch 60 :beat 0 :dur 2}
-                            {:pitch 64 :beat 2 :dur 1}
-                            {:pitch 67 :beat 3 :dur 1}
-                            {:pitch 65 :beat 4 :dur 2}
-                            {:pitch 60 :beat 6 :dur 2}]
-                    :drag nil
-                    :held #{}
-                    :scroll-beat 0.0
-                    :scroll-note 24.0
-                    :zoom 1.0
-                    :playing false
-                    :play-beat 0.0
-                    :voices []
-                    :quit false}]
-        (let [state' (tick-audio (tick-held (drain-events ctx state)) aud)]
-          (when-not (:quit state')
-            (let [{:keys [notes drag scroll-beat scroll-note zoom playing play-beat]} state']
-              (app/set-draw-color ctx 20 20 28 255)
-              (app/clear ctx)
-              (draw-piano-keys ctx scroll-note)
-              (draw-grid ctx scroll-beat scroll-note zoom)
-              (draw-notes ctx notes drag scroll-beat scroll-note zoom)
-              (when playing
-                (draw-playhead ctx play-beat scroll-beat zoom))
-              (app/present ctx))
-            (recur state')))))))
+      (let [block-ptr (ffi/alloc (* FRAME-SAMPLES CHANNELS 4))]
+        (try
+          (loop [state {:notes [{:pitch 60 :beat 0 :dur 2 :waveform :sine}
+                                {:pitch 64 :beat 2 :dur 1 :waveform :sine}
+                                {:pitch 67 :beat 3 :dur 1 :waveform :sine}
+                                {:pitch 65 :beat 4 :dur 2 :waveform :square}
+                                {:pitch 60 :beat 6 :dur 2 :waveform :triangle}]
+                        :drag nil
+                        :held #{}
+                        :scroll-beat 0.0
+                        :scroll-note 24.0
+                        :zoom 1.0
+                        :playing false
+                        :play-beat 0.0
+                        :mixer nil
+                        :selected-waveform :sine
+                        :quit false}]
+            (let [state' (tick-audio (tick-held (drain-events ctx state)) aud block-ptr)]
+              (when-not (:quit state')
+                (let [{:keys [notes drag scroll-beat scroll-note zoom playing play-beat
+                              selected-waveform]} state']
+                  (app/set-draw-color ctx 20 20 28 255)
+                  (app/clear ctx)
+                  (draw-piano-keys ctx scroll-note)
+                  (draw-grid ctx scroll-beat scroll-note zoom)
+                  (draw-notes ctx notes drag scroll-beat scroll-note zoom)
+                  (when playing
+                    (draw-playhead ctx play-beat scroll-beat zoom))
+                  (draw-toolbar ctx selected-waveform))
+                (app/present ctx)
+                (recur state'))))
+          (finally (ffi/free block-ptr)))))))
 
 (run)
