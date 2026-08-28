@@ -176,8 +176,8 @@
    (if ok?
      value
      (if (and message-fn error)
-       (let [text (String. (message-fn error))]
-         (close! error)
+       (let [text (try (String. (message-fn error))
+                        (finally (close! error)))] ;; close even if message-fn itself throws
          (throw (ex-info (str method-name " failed: " text) {:diplomat/error text})))
        (throw (ex-info (str method-name " failed") {:diplomat/error error}))))))
 
