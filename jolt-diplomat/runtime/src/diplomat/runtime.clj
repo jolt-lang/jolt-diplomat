@@ -220,6 +220,12 @@
   [buf cap w]
   (c-simple-write buf cap w))
 
+(defn- writeable-grow-failed? [w]
+  (not= 0 (ffi/read w :uint8 O-grow-failed)))
+
+(defn- writeable-read-bytes [buf w]
+  (ffi/read-bytes buf (ffi/read w :size_t O-len)))
+
 ;; FIXED (severity #2, deduped): the grow_failed check — read the flag,
 ;; throw with the caller's label if truncation happened, else read back
 ;; the actual bytes — was hand-repeated at every writeable-out callsite
@@ -232,22 +238,21 @@
   hold the output (DiplomatWrite's grow_failed flag). label names the
   call for the exception message.
 
+  buf-size names the buffer's actual allocated size in the exception's
+  ex-data (the caller knows this; read-writeable! doesn't take a buffer
+  and can't infer it from w).
+
   Direct callers (e.g. a generated describe method that owns its own
   fixed buf) get the original throw-on-overflow contract unchanged.
   writeable-capture/writeable-capture-when below don't call this on the
-  overflow path — they retry with a bigger buffer instead; see grow!"
-  [buf w label]
-  (if (not= 0 (ffi/read w :uint8 O-grow-failed))
-    (throw (ex-info (str label ": buffer grow failed, output truncated")
-                     {:diplomat/buffer-size initial-buffer-size}))
-    (let [n (ffi/read w :size_t O-len)]
-      (ffi/read-bytes buf n))))
-
-(defn- writeable-grow-failed? [w]
-  (not= 0 (ffi/read w :uint8 O-grow-failed)))
-
-(defn- writeable-read-bytes [buf w]
-  (ffi/read-bytes buf (ffi/read w :size_t O-len)))
+  overflow path — they retry with a bigger buffer instead; see
+  capture-loop."
+  ([buf w label] (read-writeable! buf w label initial-buffer-size))
+  ([buf w label buf-size]
+   (if (writeable-grow-failed? w)
+     (throw (ex-info (str label ": buffer grow failed, output truncated")
+                      {:diplomat/buffer-size buf-size}))
+     (writeable-read-bytes buf w))))
 
 ;; Doubles the buffer and retries rather than throwing on the first
 ;; overflow — a long URL, a verbose describe(), or deeply nested JSON can

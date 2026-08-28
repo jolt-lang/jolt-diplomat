@@ -358,7 +358,7 @@ fn collect_struct_field_leaves(
     prefix_kebab: &str,
     prefix_c: &str,
     out: &mut Vec<(String, String, String)>,
-) {
+) -> Result<(), String> {
     for (fname, shape) in fields {
         let kebab = if prefix_kebab.is_empty() {
             to_kebab(fname)
@@ -383,11 +383,26 @@ fn collect_struct_field_leaves(
                 out.push((kebab, c_path, ":int".to_string()));
             }
             FieldShape::Nested { fields: sub_fields, .. } => {
-                collect_struct_field_leaves(sub_fields, &kebab, &c_path, out);
+                collect_struct_field_leaves(sub_fields, &kebab, &c_path, out)?;
             }
-            _ => {} // OptionPrim/OptionEnum in struct fields — not yet supported
+            // Every other "unsupported shape" in this file fails loudly
+            // (see the module doc comment) — this used to be `_ => {}`,
+            // silently dropping the field from the emitted Clojure map
+            // with no error and no eprintln!. A struct returned by value
+            // with an Option<primitive>/Option<enum> field would produce
+            // a map quietly missing that key, forever, with nothing to
+            // signal why. No example crate happens to hit this shape
+            // today, so it shipped unnoticed — fixed to match the file's
+            // own stated rule instead of leaving a silent-wrong path.
+            FieldShape::OptionPrim { .. } | FieldShape::OptionEnum { .. } => {
+                return Err(format!(
+                    "struct return field {fname}: Option<primitive/enum> in a \
+                     by-value struct return is not supported"
+                ));
+            }
         }
     }
+    Ok(())
 }
 
 fn gen_opaque_clj(tcx: &hir::TypeContext, op: &hir::OpaqueDef, shim_c: &mut String) -> String {
@@ -926,7 +941,16 @@ fn gen_method(
         let _ = writeln!(out, "(def ^:private sz-{struct_kebab}-struct (delay (c-sizeof-{struct_kebab}-struct)))");
 
         let mut leaf_fields: Vec<(String, String, String)> = vec![];
-        collect_struct_field_leaves(fields, "", "", &mut leaf_fields);
+        // NOTE: c-sizeof-{struct}-struct's defcfn + shim C were already
+        // written above, before this check — bailing out here leaves that
+        // one shim function orphaned (unused, harmless dead C code) rather
+        // than never emitted. Matches this branch's existing eager-write
+        // shape; not worth restructuring the whole function to make this
+        // one branch atomic for an error path no example crate hits.
+        if let Err(e) = collect_struct_field_leaves(fields, "", "", &mut leaf_fields) {
+            eprintln!("skipped {owner}::{fn_name} ({e})");
+            return false;
+        }
 
         // Emit one offsetof shim + defcfn + delay per leaf field.
         for (fname_kebab, c_field_path, _) in &leaf_fields {
