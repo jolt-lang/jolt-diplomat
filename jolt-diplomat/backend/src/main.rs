@@ -1184,13 +1184,177 @@ fn gen_enum_clj(en: &hir::EnumDef) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::emit_opaque_wrap;
+    use super::*;
 
     #[test]
     fn opaque_wrap_uses_atom_not_bare_bool() {
         assert_eq!(emit_opaque_wrap("Thingy", "Thingy", "p", false), "(->Thingy p (atom false))");
         assert_eq!(emit_opaque_wrap("Thingy", "Thingy", "p", true), "(->Thingy p (atom true))");
         assert_eq!(emit_opaque_wrap("Other", "Owner", "p", false), "(other/->Other p (atom false))");
+    }
+
+    /// Lowers a single-file (no submodules) #[diplomat::bridge] source
+    /// string to a TypeContext, in-process — no disk I/O, mirrors what
+    /// main() does minus syn_inline_mod (not needed for a single file).
+    fn lower(src: &str) -> hir::TypeContext {
+        let file: syn::File = syn::parse_str(src).expect("test source must parse");
+        let mut attr_validator = hir::BasicAttributeValidator::new("c");
+        attr_validator.support = diplomat_tool_c_attr_support();
+        hir::TypeContext::from_syn(&file, Default::default(), attr_validator)
+            .unwrap_or_else(|e| panic!("test source failed to lower: {e:?}"))
+    }
+
+    fn find_opaque_method<'a>(tcx: &'a hir::TypeContext, owner: &str, method: &str) -> &'a hir::Method {
+        for (_id, def) in tcx.all_types() {
+            if let TypeDef::Opaque(op) = def {
+                if op.name.as_str() == owner {
+                    if let Some(m) = op.methods.iter().find(|m| m.name.as_str() == method) {
+                        return m;
+                    }
+                }
+            }
+        }
+        panic!("no method {owner}::{method} in test source");
+    }
+
+    // Regression test for the bug found on review 2026-08-28: classify_return
+    // used to match ANY ReturnType::Fallible and discard the success type,
+    // so gen_method's ok_val construction unconditionally assumed
+    // Result<Box<Self>, E> even when the Ok type was a DIFFERENT opaque.
+    // That produced a shim wrapping the returned pointer as the wrong
+    // record type — silent type confusion, not caught by dr/ptr! (which
+    // only checks closed-atom, not the pointer's actual C type).
+    #[test]
+    fn fallible_return_of_other_opaque_is_rejected_not_miswrapped() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Foo;
+                #[diplomat::opaque]
+                pub struct Bar;
+                #[diplomat::opaque]
+                pub struct FooError(String);
+
+                impl Foo {
+                    pub fn try_get_bar(&self) -> Result<Box<Bar>, Box<FooError>> {
+                        Ok(Box::new(Bar))
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Foo", "try_get_bar");
+        let mut extra_requires = std::collections::BTreeSet::new();
+        let rk = classify_return(&tcx, "Foo", m, &mut extra_requires);
+        assert!(
+            rk.is_none(),
+            "Result<Box<Bar>, E> on Foo must be rejected (Bar != Foo), not classified"
+        );
+    }
+
+    // Sibling check: the shape gen_method DOES correctly support —
+    // Result<Box<Self>, E> — must still classify successfully. Guards
+    // against a future fix over-tightening the check above.
+    #[test]
+    fn fallible_return_of_self_is_still_accepted() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Foo;
+                #[diplomat::opaque]
+                pub struct FooError(String);
+
+                impl Foo {
+                    pub fn try_create() -> Result<Box<Foo>, Box<FooError>> {
+                        Ok(Box::new(Foo))
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Foo", "try_create");
+        let mut extra_requires = std::collections::BTreeSet::new();
+        let rk = classify_return(&tcx, "Foo", m, &mut extra_requires);
+        assert!(
+            matches!(rk, Some(ReturnKind::Fallible { is_write: false, is_unit: false })),
+            "Result<Box<Self>, E> must still classify as Fallible{{is_unit: false}}"
+        );
+
+        // Close the loop through actual codegen, not just classification:
+        // the fix narrows what's accepted, but a regression could also
+        // live in how the accepted case is turned into Clojure.
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let generated = gen_method(&tcx, "Foo", m, &mut out, &mut shim_c, &mut extra_requires);
+        assert!(generated, "Result<Box<Self>, E> must still generate a binding");
+        assert!(
+            out.contains("(->Foo (ffi/read out :pointer 0) (atom false))"),
+            "the Ok value must be wrapped as Foo (own type), got:\n{out}"
+        );
+    }
+
+    // Regression test for the bug found on review 2026-08-28:
+    // has_owned_slice only checked Slice::Strs, missing the parallel
+    // Slice::Primitive(MaybeOwn::Own, _) shape (Box<[u8]>). The param
+    // branch further down computed is_mut from
+    // borrow.as_borrowed().unwrap_or(false), which silently treated an
+    // owned slice the same as an immutably-borrowed one.
+    #[test]
+    fn owned_primitive_slice_param_is_rejected_not_treated_as_borrowed() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Sink;
+
+                impl Sink {
+                    pub fn sum_owned(&self, items: Box<[u8]>) -> u32 {
+                        items.iter().map(|&x| x as u32).sum()
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Sink", "sum_owned");
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+        let generated = gen_method(&tcx, "Sink", m, &mut out, &mut shim_c, &mut extra_requires);
+        assert!(!generated, "Box<[u8]> param must make gen_method skip the method (return false)");
+        assert!(out.is_empty(), "a skipped method must not emit any Clojure");
+        assert!(
+            !shim_c.contains("DiplomatU8View"),
+            "a skipped method must not emit a shim treating the owned slice as a borrowed view"
+        );
+    }
+
+    // Sibling check: a genuinely borrowed &[u8] param must NOT trip the
+    // owned-slice guard — every with-primitive-buffer example depends on
+    // this path still working.
+    #[test]
+    fn borrowed_primitive_slice_param_is_not_flagged_as_owned() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Sink;
+
+                impl Sink {
+                    pub fn sum_borrowed(&self, items: &[u8]) -> u32 {
+                        items.iter().map(|&x| x as u32).sum()
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Sink", "sum_borrowed");
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+        let generated = gen_method(&tcx, "Sink", m, &mut out, &mut shim_c, &mut extra_requires);
+        assert!(generated, "a genuinely borrowed &[u8] param must still generate a binding");
+        assert!(
+            out.contains("with-primitive-buffer"),
+            "a borrowed &[u8] param must go through dr/with-primitive-buffer"
+        );
     }
 }
 
