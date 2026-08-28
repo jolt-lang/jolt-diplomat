@@ -1,0 +1,12 @@
+[package]
+name = "callback_capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "callback_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+diplomat = ">=0.10,<0.16"
+diplomat-runtime = ">=0.10,<0.16"
