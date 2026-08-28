@@ -157,16 +157,29 @@
   "raw-result: {:ok? bool :value v :error e}.
   Optional message-fn: called with the error value to produce a string
   for the exception message — use when the error is an opaque with a
-  message() method rather than a raw int."
+  message() method rather than a raw int.
+
+  When message-fn is given, error is an owned opaque the generated Result
+  branch just allocated (closed-atom starts false — see emit_opaque_wrap).
+  Nothing in a catch clause was ever required to close it: every real
+  caller (across all 8 example crates) only reads ex-message, never holds
+  onto ex-data's opaque past the catch — so this closes it here, right
+  after extracting the string, instead of leaking it on every error path.
+  :diplomat/error in ex-data is the extracted message string, not the
+  (now-closed) opaque — a caller can't use a closed opaque anyway, and
+  this avoids handing out a handle that dr/ptr! would immediately reject.
+  The raw-int error case (no message-fn) is unaffected — there's no
+  opaque to close, so error is passed through as-is."
   ([{:keys [ok? value error] :as _raw-result} method-name]
    (unwrap-result! _raw-result method-name nil))
   ([{:keys [ok? value error] :as _raw-result} method-name message-fn]
    (if ok?
      value
-     (let [msg (if (and message-fn error)
-                 (str method-name " failed: " (String. (message-fn error)))
-                 (str method-name " failed"))]
-       (throw (ex-info msg {:diplomat/error error}))))))
+     (if (and message-fn error)
+       (let [text (String. (message-fn error))]
+         (close! error)
+         (throw (ex-info (str method-name " failed: " text) {:diplomat/error text})))
+       (throw (ex-info (str method-name " failed") {:diplomat/error error}))))))
 
 ;; -----------------------------------------------------------------------
 ;; DiplomatWriteable — Jolt owns the buffer the whole time, so there's no
