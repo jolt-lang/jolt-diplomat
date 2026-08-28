@@ -28,14 +28,14 @@
 
 (ffi/defcfn ^:private c-kind "jolt_json_JsonValue_kind_mv1" [:pointer] :int)
 (defn kind [self]
-  (json-kind/int->kw (c-kind (:ptr self)))
+  (json-kind/int->kw (c-kind (dr/ptr! self)))
 )
 
 (ffi/defcfn ^:private c-as-bool "jolt_json_JsonValue_as_bool_mv1" [:pointer :pointer :pointer] :void)
 (defn as-bool [self]
   (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
     (try
-      (c-as-bool (:ptr self) out-val out-is-ok)
+      (c-as-bool (dr/ptr! self) out-val out-is-ok)
       (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :int 0))
       (finally (ffi/free out-val) (ffi/free out-is-ok))))
 )
@@ -44,35 +44,35 @@
 (defn as-f64 [self]
   (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
     (try
-      (c-as-f64 (:ptr self) out-val out-is-ok)
+      (c-as-f64 (dr/ptr! self) out-val out-is-ok)
       (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :double 0))
       (finally (ffi/free out-val) (ffi/free out-is-ok))))
 )
 
 (ffi/defcfn ^:private c-as-str "jolt_json_JsonValue_as_str_mv1" [:pointer :pointer] :int)
 (defn as-str [self]
-  (dr/writeable-capture-when (fn [w__] (c-as-str (:ptr self) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-as-str (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-array-len "jolt_json_JsonValue_array_len_mv1" [:pointer :pointer :pointer] :void)
 (defn array-len [self]
   (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
     (try
-      (c-array-len (:ptr self) out-val out-is-ok)
+      (c-array-len (dr/ptr! self) out-val out-is-ok)
       (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint64 0))
       (finally (ffi/free out-val) (ffi/free out-is-ok))))
 )
 
 (ffi/defcfn ^:private c-array-get "json_JsonValue_array_get_mv1" [:pointer :uint64] :pointer)
-(defn array-get [self index] (let [p (c-array-get (:ptr self) index)] (when (not= 0 p) (->JsonValue p (atom true)))))
+(defn array-get [self index] (let [p (c-array-get (dr/ptr! self) index)] (when (not= 0 p) (->JsonValue p (atom false)))))
 
 (ffi/defcfn ^:private c-object-get "jolt_json_JsonValue_object_get_mv1" [:pointer :string :size_t :pointer] :int)
 (defn object-get [self key]
-  (dr/writeable-capture-when (fn [w__] (c-object-get (:ptr self) key (count key) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-object-get (dr/ptr! self) key (count key) w__)))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_json_JsonValue_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 

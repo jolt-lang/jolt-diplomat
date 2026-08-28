@@ -552,7 +552,7 @@ fn gen_method(
         let mut call_exprs = vec![];
         if has_self {
             public_names.push("self".to_string());
-            call_exprs.push("(:ptr self)".to_string());
+            call_exprs.push("(dr/ptr! self)".to_string());
         }
         for p in &m.params {
             let Type::Primitive(prim) = &p.ty else {
@@ -577,7 +577,16 @@ fn gen_method(
         let call = format!("(c-{fn_name} {})", call_exprs.join(" "));
         let body = match &rk {
             ReturnKind::NullableOpaque { target } => {
-                let wrap = emit_opaque_wrap(target, owner, "p", true);
+                // owns=false, same as the Opaque arm below — this returns a
+                // freshly allocated, owned value (nullable only in the sense
+                // that the C pointer may be null), so closed-atom must start
+                // false (open) like every other owned-opaque return. Passing
+                // true here was a bug: it marked the value already-closed
+                // before close! ever ran, silently masking a real leak (the
+                // destroy fn was never called) until dr/ptr! started
+                // rejecting reads against an atom that read true —
+                // confirmed against chrono's from-timestamp.
+                let wrap = emit_opaque_wrap(target, owner, "p", false);
                 format!("(let [p {call}] (when (not= 0 p) {wrap}))")
             }
             ReturnKind::Opaque { target } => emit_opaque_wrap(target, owner, &call, false),
@@ -606,7 +615,7 @@ fn gen_method(
             other => panic!("jolt-diplomat-backend: unsupported self type {other:?} on {owner}::{}", m.name),
         };
         c_params.push(format!("{self_const}{owner}* self"));
-        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into() });
+        arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(dr/ptr! self)".into() });
     }
 
     let mut call_args = vec![];
@@ -717,7 +726,7 @@ fn gen_method(
             Type::Opaque(op) => {
                 let op_name = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
                 c_params.push(format!("const {op_name}* {cname}"));
-                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(:ptr {pname})") });
+                arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: format!("(dr/ptr! {pname})") });
                 call_args.push(cname);
             }
             Type::Callback(cb) => {

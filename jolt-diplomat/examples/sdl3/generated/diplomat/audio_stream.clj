@@ -26,12 +26,12 @@
 )
 
 (ffi/defcfn ^:private c-queued-bytes "sdl3_AudioStream_queued_bytes_mv1" [:pointer] :int)
-(defn queued-bytes [self] (c-queued-bytes (:ptr self)))
+(defn queued-bytes [self] (c-queued-bytes (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-put-samples "jolt_sdl3_AudioStream_put_samples_mv1" [:pointer :pointer :size_t] :void)
 (defn put-samples [self samples]
   (dr/with-primitive-buffer [samples-buf :float samples]
-    (c-put-samples (:ptr self) samples-buf (count samples))
+    (c-put-samples (dr/ptr! self) samples-buf (count samples))
   )
 )
 

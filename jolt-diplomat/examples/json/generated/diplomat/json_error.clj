@@ -9,6 +9,6 @@
 
 (ffi/defcfn ^:private c-message "jolt_json_JsonError_message_mv1" [:pointer :pointer] :void)
 (defn message [self]
-  (dr/writeable-capture (fn [w__] (c-message (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-message (dr/ptr! self) w__)))
 )
 

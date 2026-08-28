@@ -33,7 +33,7 @@
 (defn load-font [self path pt-size]
   (let [out (ffi/alloc @sz-load-font-result)]
     (try
-      (c-load-font (:ptr self) path (count path) pt-size out)
+      (c-load-font (dr/ptr! self) path (count path) pt-size out)
       (dr/unwrap-result!
        (if (= 1 (ffi/read out :uint8 @is-ok-off-load-font))
          {:ok? true :value nil}
@@ -44,7 +44,7 @@
 
 (ffi/defcfn ^:private c-draw-text "jolt_sdl3_SdlApp_draw_text_mv1" [:pointer :string :size_t :float :float :uint8 :uint8 :uint8 :uint8] :void)
 (defn draw-text [self text x y r g b a]
-  (c-draw-text (:ptr self) text (count text) x y r g b a)
+  (c-draw-text (dr/ptr! self) text (count text) x y r g b a)
 )
 
 (ffi/defcfn ^:private c-sizeof-sdl-event-struct "jolt_sizeof_sdl_event_mv1" [] :int)
@@ -63,27 +63,27 @@
 (defn poll-event [self]
   (let [out (ffi/alloc @sz-sdl-event-struct)]
     (try
-      (c-poll-event (:ptr self) out)
+      (c-poll-event (dr/ptr! self) out)
       {:kind (ffi/read out :uint8 @off-sdl-event-kind) :key-code (ffi/read out :int @off-sdl-event-key-code) :mouse-button (ffi/read out :uint8 @off-sdl-event-mouse-button) :mouse-x (ffi/read out :float @off-sdl-event-mouse-x) :mouse-y (ffi/read out :float @off-sdl-event-mouse-y)}
       (finally (ffi/free out)))))
 
 (ffi/defcfn ^:private c-set-draw-color "sdl3_SdlApp_set_draw_color_mv1" [:pointer :uint8 :uint8 :uint8 :uint8] :void)
-(defn set-draw-color [self r g b a] (c-set-draw-color (:ptr self) r g b a))
+(defn set-draw-color [self r g b a] (c-set-draw-color (dr/ptr! self) r g b a))
 
 (ffi/defcfn ^:private c-clear "sdl3_SdlApp_clear_mv1" [:pointer] :void)
-(defn clear [self] (c-clear (:ptr self)))
+(defn clear [self] (c-clear (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-present "sdl3_SdlApp_present_mv1" [:pointer] :void)
-(defn present [self] (c-present (:ptr self)))
+(defn present [self] (c-present (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-fill-rect "sdl3_SdlApp_fill_rect_mv1" [:pointer :float :float :float :float] :void)
-(defn fill-rect [self x y w h] (c-fill-rect (:ptr self) x y w h))
+(defn fill-rect [self x y w h] (c-fill-rect (dr/ptr! self) x y w h))
 
 (ffi/defcfn ^:private c-draw-rect "sdl3_SdlApp_draw_rect_mv1" [:pointer :float :float :float :float] :void)
-(defn draw-rect [self x y w h] (c-draw-rect (:ptr self) x y w h))
+(defn draw-rect [self x y w h] (c-draw-rect (dr/ptr! self) x y w h))
 
 (ffi/defcfn ^:private c-draw-line "sdl3_SdlApp_draw_line_mv1" [:pointer :float :float :float :float] :void)
-(defn draw-line [self x1 y1 x2 y2] (c-draw-line (:ptr self) x1 y1 x2 y2))
+(defn draw-line [self x1 y1 x2 y2] (c-draw-line (dr/ptr! self) x1 y1 x2 y2))
 
 (ffi/defcfn ^:private c-set-title "jolt_sdl3_SdlApp_set_title_mv1" [:pointer :string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-set-title-result "jolt_sizeof_sdl3_SdlApp_set_title_mv1_result" [] :int)
@@ -93,7 +93,7 @@
 (defn set-title [self title]
   (let [out (ffi/alloc @sz-set-title-result)]
     (try
-      (c-set-title (:ptr self) title (count title) out)
+      (c-set-title (dr/ptr! self) title (count title) out)
       (dr/unwrap-result!
        (if (= 1 (ffi/read out :uint8 @is-ok-off-set-title))
          {:ok? true :value nil}
@@ -103,8 +103,8 @@
 )
 
 (ffi/defcfn ^:private c-window-width "sdl3_SdlApp_window_width_mv1" [:pointer] :uint)
-(defn window-width [self] (c-window-width (:ptr self)))
+(defn window-width [self] (c-window-width (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-window-height "sdl3_SdlApp_window_height_mv1" [:pointer] :uint)
-(defn window-height [self] (c-window-height (:ptr self)))
+(defn window-height [self] (c-window-height (dr/ptr! self)))
 

@@ -9,6 +9,6 @@
 
 (ffi/defcfn ^:private c-message "jolt_b64_Base64Error_message_mv1" [:pointer :pointer] :void)
 (defn message [self]
-  (dr/writeable-capture (fn [w__] (c-message (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-message (dr/ptr! self) w__)))
 )
 

@@ -29,20 +29,20 @@
 )
 
 (ffi/defcfn ^:private c-from-timestamp "chrono_DateTime_from_timestamp_mv1" [:int64] :pointer)
-(defn from-timestamp [secs] (let [p (c-from-timestamp secs)] (when (not= 0 p) (->DateTime p (atom true)))))
+(defn from-timestamp [secs] (let [p (c-from-timestamp secs)] (when (not= 0 p) (->DateTime p (atom false)))))
 
 (ffi/defcfn ^:private c-to-rfc3339 "jolt_chrono_DateTime_to_rfc3339_mv1" [:pointer :pointer] :void)
 (defn to-rfc3339 [self]
-  (dr/writeable-capture (fn [w__] (c-to-rfc3339 (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-to-rfc3339 (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-format "jolt_chrono_DateTime_format_mv1" [:pointer :string :size_t :pointer] :int)
 (defn format [self fmt]
-  (dr/writeable-capture-when (fn [w__] (c-format (:ptr self) fmt (count fmt) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-format (dr/ptr! self) fmt (count fmt) w__)))
 )
 
 (ffi/defcfn ^:private c-timestamp-secs "chrono_DateTime_timestamp_secs_mv1" [:pointer] :int64)
-(defn timestamp-secs [self] (c-timestamp-secs (:ptr self)))
+(defn timestamp-secs [self] (c-timestamp-secs (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-sizeof-date-components-struct "jolt_sizeof_date_components_mv1" [] :int)
 (def ^:private sz-date-components-struct (delay (c-sizeof-date-components-struct)))
@@ -62,7 +62,7 @@
 (defn components [self]
   (let [out (ffi/alloc @sz-date-components-struct)]
     (try
-      (c-components (:ptr self) out)
+      (c-components (dr/ptr! self) out)
       {:year (ffi/read out :int @off-date-components-year) :month (ffi/read out :uint8 @off-date-components-month) :day (ffi/read out :uint8 @off-date-components-day) :hour (ffi/read out :uint8 @off-date-components-hour) :minute (ffi/read out :uint8 @off-date-components-minute) :second (ffi/read out :uint8 @off-date-components-second)}
       (finally (ffi/free out)))))
 

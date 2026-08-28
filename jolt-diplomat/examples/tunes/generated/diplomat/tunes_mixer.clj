@@ -14,39 +14,39 @@
 
 (ffi/defcfn ^:private c-add-note "jolt_tunes_TunesMixer_add_note_mv1" [:pointer :float :float :float :int] :void)
 (defn add-note [self freq-hz start-time duration waveform]
-  (c-add-note (:ptr self) freq-hz start-time duration (waveform/kw->int waveform))
+  (c-add-note (dr/ptr! self) freq-hz start-time duration (waveform/kw->int waveform))
 )
 
 (ffi/defcfn ^:private c-add-chord "jolt_tunes_TunesMixer_add_chord_mv1" [:pointer :pointer :size_t :float :float :int] :void)
 (defn add-chord [self freqs start-time duration waveform]
   (dr/with-primitive-buffer [freqs-buf :float freqs]
-    (c-add-chord (:ptr self) freqs-buf (count freqs) start-time duration (waveform/kw->int waveform))
+    (c-add-chord (dr/ptr! self) freqs-buf (count freqs) start-time duration (waveform/kw->int waveform))
   )
 )
 
 (ffi/defcfn ^:private c-clear "tunes_TunesMixer_clear_mv1" [:pointer] :void)
-(defn clear [self] (c-clear (:ptr self)))
+(defn clear [self] (c-clear (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-disable-cache "tunes_TunesMixer_disable_cache_mv1" [:pointer] :void)
-(defn disable-cache [self] (c-disable-cache (:ptr self)))
+(defn disable-cache [self] (c-disable-cache (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-total-duration "tunes_TunesMixer_total_duration_mv1" [:pointer] :float)
-(defn total-duration [self] (c-total-duration (:ptr self)))
+(defn total-duration [self] (c-total-duration (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-render-buffer-size "tunes_TunesMixer_render_buffer_size_mv1" [:pointer :float] :size_t)
-(defn render-buffer-size [self sample-rate] (c-render-buffer-size (:ptr self) sample-rate))
+(defn render-buffer-size [self sample-rate] (c-render-buffer-size (dr/ptr! self) sample-rate))
 
 (ffi/defcfn ^:private c-render-into "jolt_tunes_TunesMixer_render_into_mv1" [:pointer :pointer :size_t :float] :void)
 (defn render-into [self buf sample-rate]
   (dr/with-primitive-buffer [buf-buf :float buf]
-    (c-render-into (:ptr self) buf-buf (count buf) sample-rate)
+    (c-render-into (dr/ptr! self) buf-buf (count buf) sample-rate)
   )
 )
 
 (ffi/defcfn ^:private c-process-block "jolt_tunes_TunesMixer_process_block_mv1" [:pointer :pointer :size_t :float :float] :void)
 (defn process-block [self buf sample-rate start-time]
   (dr/with-primitive-buffer [buf-buf :float buf]
-    (c-process-block (:ptr self) buf-buf (count buf) sample-rate start-time)
+    (c-process-block (dr/ptr! self) buf-buf (count buf) sample-rate start-time)
   )
 )
 
@@ -58,7 +58,7 @@
 (defn export-wav [self path sample-rate]
   (let [out (ffi/alloc @sz-export-wav-result)]
     (try
-      (c-export-wav (:ptr self) path (count path) sample-rate out)
+      (c-export-wav (dr/ptr! self) path (count path) sample-rate out)
       (dr/unwrap-result!
        (if (= 1 (ffi/read out :uint8 @is-ok-off-export-wav))
          {:ok? true :value nil}

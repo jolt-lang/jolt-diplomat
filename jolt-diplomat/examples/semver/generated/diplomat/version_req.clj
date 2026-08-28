@@ -27,11 +27,11 @@
 
 (ffi/defcfn ^:private c-matches "jolt_sv_VersionReq_matches_mv1" [:pointer :pointer] :int)
 (defn matches [self version]
-  (c-matches (:ptr self) (:ptr version))
+  (c-matches (dr/ptr! self) (dr/ptr! version))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_sv_VersionReq_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 

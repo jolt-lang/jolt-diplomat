@@ -61,7 +61,7 @@
 (ffi/defcfn ^:private c-value "Thingy_value" [:pointer] :uint8)
 
 (defn value [^Thingy this]
-  (c-value (:ptr this)))
+  (c-value (dr/ptr! this)))
 
 ;; --- struct-by-value param + writeable string return ----------------------
 ;; ThingyOptions {bool verbose; double scale} decomposed to scalars in the
@@ -93,7 +93,7 @@
                                     ;; crashes ("invalid memory reference"),
                                     ;; verified directly; Diplomat's writer
                                     ;; calls flush unconditionally to finalize.
-      (c-describe (:ptr this) (if verbose 1 0) (double scale) w)
+      (c-describe (dr/ptr! this) (if verbose 1 0) (double scale) w)
       (dr/read-writeable! buf w "Thingy/describe")
       (finally (ffi/free buf) (ffi/free w)))))
 
@@ -110,4 +110,4 @@
   ;; already guards the zero-length case per severity #3 — (max n 1) —
   ;; instead of that guard being re-derived here too).
   (dr/with-primitive-buffer [buf :uint8 others]
-    (c-sum-with (:ptr this) buf (count others))))
+    (c-sum-with (dr/ptr! this) buf (count others))))

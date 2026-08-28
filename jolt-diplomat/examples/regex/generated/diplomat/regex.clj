@@ -27,16 +27,16 @@
 
 (ffi/defcfn ^:private c-is-match "jolt_rx_Regex_is_match_mv1" [:pointer :string :size_t] :int)
 (defn is-match [self text]
-  (c-is-match (:ptr self) text (count text))
+  (c-is-match (dr/ptr! self) text (count text))
 )
 
 (ffi/defcfn ^:private c-find "jolt_rx_Regex_find_mv1" [:pointer :string :size_t :pointer] :int)
 (defn find [self text]
-  (dr/writeable-capture-when (fn [w__] (c-find (:ptr self) text (count text) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-find (dr/ptr! self) text (count text) w__)))
 )
 
 (ffi/defcfn ^:private c-replace-all "jolt_rx_Regex_replace_all_mv1" [:pointer :string :size_t :string :size_t :pointer] :void)
 (defn replace-all [self text replacement]
-  (dr/writeable-capture (fn [w__] (c-replace-all (:ptr self) text (count text) replacement (count replacement) w__)))
+  (dr/writeable-capture (fn [w__] (c-replace-all (dr/ptr! self) text (count text) replacement (count replacement) w__)))
 )
 

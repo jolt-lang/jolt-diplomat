@@ -26,24 +26,24 @@
 )
 
 (ffi/defcfn ^:private c-major "sv_Version_major_mv1" [:pointer] :uint64)
-(defn major [self] (c-major (:ptr self)))
+(defn major [self] (c-major (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-minor "sv_Version_minor_mv1" [:pointer] :uint64)
-(defn minor [self] (c-minor (:ptr self)))
+(defn minor [self] (c-minor (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-patch "sv_Version_patch_mv1" [:pointer] :uint64)
-(defn patch [self] (c-patch (:ptr self)))
+(defn patch [self] (c-patch (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-to-string "jolt_sv_Version_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-is-prerelease "sv_Version_is_prerelease_mv1" [:pointer] :int)
-(defn is-prerelease [self] (c-is-prerelease (:ptr self)))
+(defn is-prerelease [self] (c-is-prerelease (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-pre "jolt_sv_Version_pre_mv1" [:pointer :pointer] :int)
 (defn pre [self]
-  (dr/writeable-capture-when (fn [w__] (c-pre (:ptr self) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-pre (dr/ptr! self) w__)))
 )
 

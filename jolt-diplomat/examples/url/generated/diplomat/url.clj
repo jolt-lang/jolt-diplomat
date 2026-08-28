@@ -27,36 +27,36 @@
 
 (ffi/defcfn ^:private c-scheme "jolt_url_Url_scheme_mv1" [:pointer :pointer] :void)
 (defn scheme [self]
-  (dr/writeable-capture (fn [w__] (c-scheme (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-scheme (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-host "jolt_url_Url_host_mv1" [:pointer :pointer] :int)
 (defn host [self]
-  (dr/writeable-capture-when (fn [w__] (c-host (:ptr self) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-host (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-path "jolt_url_Url_path_mv1" [:pointer :pointer] :void)
 (defn path [self]
-  (dr/writeable-capture (fn [w__] (c-path (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-path (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-query "jolt_url_Url_query_mv1" [:pointer :pointer] :int)
 (defn query [self]
-  (dr/writeable-capture-when (fn [w__] (c-query (:ptr self) w__)))
+  (dr/writeable-capture-when (fn [w__] (c-query (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-port "jolt_url_Url_port_mv1" [:pointer :pointer :pointer] :void)
 (defn port [self]
   (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
     (try
-      (c-port (:ptr self) out-val out-is-ok)
+      (c-port (dr/ptr! self) out-val out-is-ok)
       (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint 0))
       (finally (ffi/free out-val) (ffi/free out-is-ok))))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_url_Url_to_string_mv1" [:pointer :pointer] :void)
 (defn to-string [self]
-  (dr/writeable-capture (fn [w__] (c-to-string (:ptr self) w__)))
+  (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 
 (ffi/defcfn ^:private c-sizeof-url-info-struct "jolt_sizeof_url_info_mv1" [] :int)
@@ -71,7 +71,7 @@
 (defn info [self]
   (let [out (ffi/alloc @sz-url-info-struct)]
     (try
-      (c-info (:ptr self) out)
+      (c-info (dr/ptr! self) out)
       {:port (dr/read-u16 out @off-url-info-port) :has-port (ffi/read out :uint8 @off-url-info-has-port) :path-len (ffi/read out :uint @off-url-info-path-len)}
       (finally (ffi/free out)))))
 

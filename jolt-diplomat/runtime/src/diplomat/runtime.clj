@@ -60,6 +60,20 @@
          (when (compare-and-set! (:closed-atom obj#) false true)
            (~(symbol (str "c-" (name type-sym) "-destroy")) (:ptr obj#)))))))
 
+;; close! guards against a double-free, but nothing stopped a *use* after
+;; close — every generated accessor read (:ptr this) directly, handing a
+;; possibly-already-freed pointer straight to C. with-opaque protects the
+;; scoped case; anything that escapes scope (stored, returned, closed
+;; early inside a longer body) had no guard at the point of use. Every
+;; generated pointer read now goes through this instead of a bare (:ptr x).
+(defn ptr!
+  "Reads an opaque's pointer, guarding against use-after-close. A closed
+  opaque throws here instead of handing a dangling pointer to C."
+  [opaque]
+  (if @(:closed-atom opaque)
+    (throw (ex-info "use of closed opaque value" {:diplomat/type (type opaque)}))
+    (:ptr opaque)))
+
 (defmacro with-opaque
   "Like with-open, scoped to a Diplomat opaque value. Always closes even on
   exception. This is the Plan B ergonomics story — one macro instead of

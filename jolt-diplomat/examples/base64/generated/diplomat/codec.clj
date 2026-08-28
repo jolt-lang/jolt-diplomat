@@ -17,7 +17,7 @@
 (ffi/defcfn ^:private c-encode "jolt_b64_Codec_encode_mv1" [:pointer :pointer :size_t :pointer] :void)
 (defn encode [self input]
   (dr/with-primitive-buffer [input-buf :uint8 input]
-    (dr/writeable-capture (fn [w__] (c-encode (:ptr self) input-buf (count input) w__)))
+    (dr/writeable-capture (fn [w__] (c-encode (dr/ptr! self) input-buf (count input) w__)))
   )
 )
 
@@ -29,7 +29,7 @@
 (defn decode [self input]
   (let [out (ffi/alloc @sz-decode-result)]
     (try
-      (let [s (dr/writeable-capture (fn [w__] (c-decode (:ptr self) input (count input) w__ out)))]
+      (let [s (dr/writeable-capture (fn [w__] (c-decode (dr/ptr! self) input (count input) w__ out)))]
         (dr/unwrap-result!
          (if (= 1 (ffi/read out :uint8 @is-ok-off-decode))
            {:ok? true :value s}
