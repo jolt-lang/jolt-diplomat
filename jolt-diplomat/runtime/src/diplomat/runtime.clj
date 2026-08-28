@@ -160,6 +160,7 @@
 ;; -----------------------------------------------------------------------
 
 (def ^:private initial-buffer-size 256)
+(def ^:private max-buffer-size (* 16 1024 1024)) ;; ponytail: sane ceiling, raise if a real payload needs more
 
 ;; REAL layout, from offset-gen run against out-c-real/diplomat_runtime.h
 ;; (2026-08-15, diplomat 0.10.0) — see diplomat.generated-offsets. The
@@ -202,7 +203,12 @@
   "After calling into Rust with buf/w as the writeable-out args, reads
   back the bytes Rust wrote — or throws if the fixed-size buf couldn't
   hold the output (DiplomatWrite's grow_failed flag). label names the
-  call for the exception message."
+  call for the exception message.
+
+  Direct callers (e.g. a generated describe method that owns its own
+  fixed buf) get the original throw-on-overflow contract unchanged.
+  writeable-capture/writeable-capture-when below don't call this on the
+  overflow path — they retry with a bigger buffer instead; see grow!"
   [buf w label]
   (if (not= 0 (ffi/read w :uint8 O-grow-failed))
     (throw (ex-info (str label ": buffer grow failed, output truncated")
@@ -210,10 +216,48 @@
     (let [n (ffi/read w :size_t O-len)]
       (ffi/read-bytes buf n))))
 
+(defn- writeable-grow-failed? [w]
+  (not= 0 (ffi/read w :uint8 O-grow-failed)))
+
+(defn- writeable-read-bytes [buf w]
+  (ffi/read-bytes buf (ffi/read w :size_t O-len)))
+
+;; Doubles the buffer and retries rather than throwing on the first
+;; overflow — a long URL, a verbose describe(), or deeply nested JSON can
+;; legitimately exceed 256 bytes, and truncating that to an exception was
+;; a correctness bug on valid input, not just a fixed-cost simplification.
+;; f must be safe to call more than once: it only writes into buf/w, no
+;; other side effects, so a retry from scratch is always sound. Capped at
+;; max-buffer-size so a malformed/adversarial input can't turn a string
+;; return into unbounded allocation.
+(defn- capture-loop [f label read-fn]
+  (loop [size initial-buffer-size]
+    (let [buf (ffi/alloc size)
+          w   (ffi/alloc writeable-struct-size)]
+      (try
+        (c-simple-write buf size w) ;; NOT hand-assembled — see writeable-capture's docstring
+        (let [f-result (f w)]
+          (if (writeable-grow-failed? w)
+            (do (ffi/free buf) (ffi/free w)
+                (if (>= size max-buffer-size)
+                  (throw (ex-info (str label ": output exceeds max buffer size")
+                                   {:diplomat/buffer-size size}))
+                  (recur (* size 2))))
+            (let [result (read-fn f-result buf w)]
+              (ffi/free buf) (ffi/free w)
+              result)))
+        (catch Throwable t
+          (ffi/free buf) (ffi/free w)
+          (throw t))))))
+
 (defn writeable-capture
   "Calls f with a fresh DiplomatWrite pointer as its writeable-out
   argument, and returns the UTF-8 string Rust wrote into it. f is a fn of
   one arg: the writeable pointer.
+
+  Grows and retries (doubling from 256 bytes, capped at max-buffer-size)
+  if the output didn't fit, instead of throwing on the first overflow —
+  see capture-loop.
 
   CORRECTED per milestone-3-findings.md: the DiplomatWrite struct is
   NEVER hand-assembled here, even with correct offsets — a hand-built
@@ -229,15 +273,7 @@
   jolt-backend/shim-verified/thingy_shim2.c, generalized: the backend
   emits one such shim per Diplomat crate, not per type."
   [f]
-  (let [buf (ffi/alloc initial-buffer-size)
-        w   (ffi/alloc writeable-struct-size)]
-    (try
-      (c-simple-write buf initial-buffer-size w) ;; NOT hand-assembled
-      (f w)
-      (read-writeable! buf w "writeable-capture")
-      (finally
-        (ffi/free buf)
-        (ffi/free w)))))
+  (capture-loop f "writeable-capture" (fn [_f-result buf w] (writeable-read-bytes buf w))))
 
 ;; -----------------------------------------------------------------------
 ;; Struct-by-value — generated offset table drives read/write, replacing
@@ -246,17 +282,12 @@
 
 (defn writeable-capture-when
   "Like writeable-capture but returns nil when f returns a falsy value.
-  f receives the DiplomatWrite pointer and should return truthy on success."
+  f receives the DiplomatWrite pointer and should return truthy on success.
+  Grows and retries on overflow — see capture-loop."
   [f]
-  (let [buf (ffi/alloc initial-buffer-size)
-        w   (ffi/alloc writeable-struct-size)]
-    (try
-      (c-simple-write buf initial-buffer-size w)
-      (when (not= 0 (f w))
-        (read-writeable! buf w "writeable-capture-when"))
-      (finally
-        (ffi/free buf)
-        (ffi/free w)))))
+  (capture-loop f "writeable-capture-when"
+                (fn [f-result buf w]
+                  (when (not= 0 f-result) (writeable-read-bytes buf w)))))
 
 (defn read-u16
   "Read a little-endian uint16 from ptr at byte offset. Jolt ffi has no
