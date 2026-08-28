@@ -11,14 +11,16 @@
 (ffi/defcfn ^:private c-parse "jolt_sv_VersionReq_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_sv_VersionReq_parse_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_sv_VersionReq_parse_mv1_result_is_ok" [] :int)
+(def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
+(def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [text]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
+  (let [out (ffi/alloc @sz-parse-result)]
     (try
       (c-parse text (count text) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
-         {:ok? true :value (->VersionReq (ffi/read out :pointer 0) false)}
-         {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) false)})
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+         {:ok? true :value (->VersionReq (ffi/read out :pointer 0) (atom false))}
+         {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) (atom false))})
        "VersionReq/parse" parse-error/message)
       (finally (ffi/free out))))
 )

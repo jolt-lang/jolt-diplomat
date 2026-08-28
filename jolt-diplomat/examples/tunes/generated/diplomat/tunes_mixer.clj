@@ -10,7 +10,7 @@
 (dr/defopaque TunesMixer "tunes_TunesMixer_destroy_mv1")
 
 (ffi/defcfn ^:private c-new "tunes_TunesMixer_new_mv1" [:float] :pointer)
-(defn new [bpm] (->TunesMixer (c-new bpm) false))
+(defn new [bpm] (->TunesMixer (c-new bpm) (atom false)))
 
 (ffi/defcfn ^:private c-add-note "jolt_tunes_TunesMixer_add_note_mv1" [:pointer :float :float :float :int] :void)
 (defn add-note [self freq-hz start-time duration waveform]
@@ -53,14 +53,16 @@
 (ffi/defcfn ^:private c-export-wav "jolt_tunes_TunesMixer_export_wav_mv1" [:pointer :string :size_t :uint :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-export-wav-result "jolt_sizeof_tunes_TunesMixer_export_wav_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-export-wav "jolt_offsetof_tunes_TunesMixer_export_wav_mv1_result_is_ok" [] :int)
+(def ^:private sz-export-wav-result (delay (c-sizeof-export-wav-result)))
+(def ^:private is-ok-off-export-wav (delay (c-is-ok-offset-export-wav)))
 (defn export-wav [self path sample-rate]
-  (let [sz (c-sizeof-export-wav-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-export-wav)]
+  (let [out (ffi/alloc @sz-export-wav-result)]
     (try
       (c-export-wav (:ptr self) path (count path) sample-rate out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-export-wav))
          {:ok? true :value nil}
-         {:ok? false :error (tunes-error/->TunesError (ffi/read out :pointer 0) false)})
+         {:ok? false :error (tunes-error/->TunesError (ffi/read out :pointer 0) (atom false))})
        "TunesMixer/export-wav" tunes-error/message)
       (finally (ffi/free out))))
 )

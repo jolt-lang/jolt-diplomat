@@ -602,7 +602,8 @@ fn gen_method(
     if has_self {
         let self_const = match &m.param_self {
             Some(ps) if matches!(ps.ty, hir::SelfType::Opaque(ref o) if o.owner.mutability == hir::Mutability::Mutable) => "",
-            _ => "const ",
+            Some(ps) if matches!(ps.ty, hir::SelfType::Opaque(_)) => "const ",
+            other => panic!("jolt-diplomat-backend: unsupported self type {other:?} on {owner}::{}", m.name),
         };
         c_params.push(format!("{self_const}{owner}* self"));
         arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: "(:ptr self)".into() });
@@ -853,8 +854,8 @@ fn gen_method(
         ReturnKind::NullablePrim { c_ty, .. } => {
             let result_ty = format!("{}_result", m.abi_name);
             let _ = writeln!(shim_c, "    {result_ty} r = {real_call};");
-            let _ = writeln!(shim_c, "    *out_val = ({c_ty})r.ok;");
             let _ = writeln!(shim_c, "    *out_is_ok = r.is_ok;");
+            let _ = writeln!(shim_c, "    if (r.is_ok) {{ *out_val = ({c_ty})r.ok; }}");
         }
         ReturnKind::StructReturn { name: struct_name, .. } => {
             let _ = writeln!(shim_c, "    {struct_name} r = {real_call};");
@@ -908,25 +909,32 @@ fn gen_method(
         let sizeof_sym = format!("jolt_sizeof_{struct_snake}_mv1");
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{struct_kebab}-struct \"{sizeof_sym}\" [] :int)");
         let _ = writeln!(shim_c, "size_t {sizeof_sym}(void) {{ return sizeof({struct_name}); }}");
+        // delay, not a bare def: a top-level def would run at namespace
+        // require time, which can precede dr/load! (confirmed to break
+        // under an ordinary static :require — see tunes example). delay
+        // defers the first c-sizeof-*-struct call to first actual use,
+        // which is always after load!, while still computing it only once.
+        let _ = writeln!(out, "(def ^:private sz-{struct_kebab}-struct (delay (c-sizeof-{struct_kebab}-struct)))");
 
         let mut leaf_fields: Vec<(String, String, String)> = vec![];
         collect_struct_field_leaves(fields, "", "", &mut leaf_fields);
 
-        // Emit one offsetof shim + defcfn per leaf field.
+        // Emit one offsetof shim + defcfn + delay per leaf field.
         for (fname_kebab, c_field_path, _) in &leaf_fields {
             let field_snake = fname_kebab.replace('-', "_");
             let offsetof_sym = format!("jolt_offsetof_{struct_snake}_{field_snake}_mv1");
             let _ = writeln!(shim_c, "size_t {offsetof_sym}(void) {{ return offsetof({struct_name}, {c_field_path}); }}");
             let _ = writeln!(out, "(ffi/defcfn ^:private c-offsetof-{struct_kebab}-{fname_kebab} \"{offsetof_sym}\" [] :int)");
+            let _ = writeln!(out, "(def ^:private off-{struct_kebab}-{fname_kebab} (delay (c-offsetof-{struct_kebab}-{fname_kebab})))");
         }
 
         let reads: Vec<String> = leaf_fields.iter()
             .map(|(fname_kebab, _, jt)| {
-                let off_call = format!("(c-offsetof-{struct_kebab}-{fname_kebab})");
+                let off_sym = format!("@off-{struct_kebab}-{fname_kebab}");
                 let read_expr = if jt == ":u16" {
-                    format!("(dr/read-u16 out {off_call})")
+                    format!("(dr/read-u16 out {off_sym})")
                 } else {
-                    format!("(ffi/read out {jt} {off_call})")
+                    format!("(ffi/read out {jt} {off_sym})")
                 };
                 format!(":{fname_kebab} {read_expr}")
             })
@@ -935,7 +943,7 @@ fn gen_method(
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
             shim_arg_types.join(" "));
         let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
-        let _ = writeln!(out, "  (let [sz (c-sizeof-{struct_kebab}-struct) out (ffi/alloc sz)]");
+        let _ = writeln!(out, "  (let [out (ffi/alloc @sz-{struct_kebab}-struct)]");
         let _ = writeln!(out, "    (try");
         let _ = writeln!(out, "      (c-{fn_name} {})", shim_call_exprs.join(" "));
         let _ = writeln!(out, "      {{{}}}", reads.join(" "));
@@ -963,6 +971,11 @@ fn gen_method(
         let result_c_ty = format!("{}_result", m.abi_name);
         let _ = writeln!(out, "(ffi/defcfn ^:private c-sizeof-{fn_name}-result \"{result_sizeof_sym}\" [] :int)");
         let _ = writeln!(out, "(ffi/defcfn ^:private c-is-ok-offset-{fn_name} \"{result_is_ok_offset_sym}\" [] :int)");
+        // delay, not a bare def — see the StructReturn branch above for why:
+        // a bare def would run at namespace require time, which can precede
+        // dr/load!. delay computes it once, on first real use.
+        let _ = writeln!(out, "(def ^:private sz-{fn_name}-result (delay (c-sizeof-{fn_name}-result)))");
+        let _ = writeln!(out, "(def ^:private is-ok-off-{fn_name} (delay (c-is-ok-offset-{fn_name})))");
         let _ = writeln!(shim_c, "size_t {result_sizeof_sym}(void) {{ return sizeof({result_c_ty}); }}");
         let _ = writeln!(shim_c, "size_t {result_is_ok_offset_sym}(void) {{ return offsetof({result_c_ty}, is_ok); }}");
         // Fix 1: error opaques are owned (closed-atom=(atom false)), not
@@ -975,11 +988,11 @@ fn gen_method(
         if is_write {
             let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
             let msg_suffix = msg_fn_suffix(&opaque_error, &fn_name);
-            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
+            body_lines.push(format!("(let [out (ffi/alloc @sz-{fn_name}-result)]"));
             body_lines.push("  (try".to_string());
             body_lines.push(format!("    (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
             body_lines.push("      (dr/unwrap-result!".to_string());
-            body_lines.push("       (if (= 1 (ffi/read out :uint8 is-ok-off))".to_string());
+            body_lines.push(format!("       (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
             body_lines.push("         {:ok? true :value s}".to_string());
             body_lines.push(format!("         {{:ok? false :error {err_read}}})"));
             body_lines.push(format!("      {msg_suffix}")); // closes unwrap-result!
@@ -991,11 +1004,11 @@ fn gen_method(
             } else {
                 format!("(->{owner} (ffi/read out :pointer 0) (atom false))")
             };
-            body_lines.push(format!("(let [sz (c-sizeof-{fn_name}-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-{fn_name})]"));
+            body_lines.push(format!("(let [out (ffi/alloc @sz-{fn_name}-result)]"));
             body_lines.push("  (try".to_string());
             body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
             body_lines.push("    (dr/unwrap-result!".to_string());
-            body_lines.push("     (if (= 1 (ffi/read out :uint8 is-ok-off))".to_string());
+            body_lines.push(format!("     (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
             body_lines.push(format!("       {{:ok? true :value {ok_val}}}"));
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
             body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
@@ -1029,18 +1042,23 @@ fn gen_method(
         body_lines.push(format!("(c-{fn_name} {})", shim_call_exprs.join(" ")));
     }
 
+    // Each wrap below opens exactly one unclosed form (one `let` per
+    // callback, one `with-primitive-buffer` per buffer) — one `)` per wrap
+    // in suffix_close closes it. If a future wrap ever needs more than one
+    // top-level form, it must push that many closing parens itself here,
+    // or this count silently desyncs and emits unbalanced Clojure.
     let mut indent = String::new();
     let mut prefix_lines: Vec<String> = vec![];
     let mut suffix_close = String::new();
     for cb_wrap in &callback_wraps {
         prefix_lines.push(cb_wrap.clone());
         indent.push_str("  ");
-        suffix_close.push(')');
+        suffix_close.push(')'); // closes cb_wrap's one `let`
     }
     for (buf_var, elem_type, seq_expr) in &buffer_wraps {
         prefix_lines.push(format!("{indent}(dr/with-primitive-buffer [{buf_var} {elem_type} {seq_expr}]"));
         indent.push_str("  ");
-        suffix_close.push(')');
+        suffix_close.push(')'); // closes this one `with-primitive-buffer`
     }
 
     let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));

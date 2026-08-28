@@ -11,14 +11,16 @@
 (ffi/defcfn ^:private c-create "jolt_rx_Regex_create_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-create-result "jolt_sizeof_rx_Regex_create_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-create "jolt_offsetof_rx_Regex_create_mv1_result_is_ok" [] :int)
+(def ^:private sz-create-result (delay (c-sizeof-create-result)))
+(def ^:private is-ok-off-create (delay (c-is-ok-offset-create)))
 (defn create [pattern]
-  (let [sz (c-sizeof-create-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-create)]
+  (let [out (ffi/alloc @sz-create-result)]
     (try
       (c-create pattern (count pattern) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
-         {:ok? true :value (->Regex (ffi/read out :pointer 0) false)}
-         {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) false)})
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-create))
+         {:ok? true :value (->Regex (ffi/read out :pointer 0) (atom false))}
+         {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) (atom false))})
        "Regex/create" regex-error/message)
       (finally (ffi/free out))))
 )

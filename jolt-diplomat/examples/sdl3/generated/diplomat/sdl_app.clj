@@ -11,14 +11,16 @@
 (ffi/defcfn ^:private c-create "jolt_sdl3_SdlApp_create_mv1" [:string :size_t :uint :uint :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-create-result "jolt_sizeof_sdl3_SdlApp_create_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-create "jolt_offsetof_sdl3_SdlApp_create_mv1_result_is_ok" [] :int)
+(def ^:private sz-create-result (delay (c-sizeof-create-result)))
+(def ^:private is-ok-off-create (delay (c-is-ok-offset-create)))
 (defn create [title width height]
-  (let [sz (c-sizeof-create-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-create)]
+  (let [out (ffi/alloc @sz-create-result)]
     (try
       (c-create title (count title) width height out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
-         {:ok? true :value (->SdlApp (ffi/read out :pointer 0) false)}
-         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) false)})
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-create))
+         {:ok? true :value (->SdlApp (ffi/read out :pointer 0) (atom false))}
+         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/create" sdl-error/message)
       (finally (ffi/free out))))
 )
@@ -26,14 +28,16 @@
 (ffi/defcfn ^:private c-load-font "jolt_sdl3_SdlApp_load_font_mv1" [:pointer :string :size_t :uint :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-load-font-result "jolt_sizeof_sdl3_SdlApp_load_font_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-load-font "jolt_offsetof_sdl3_SdlApp_load_font_mv1_result_is_ok" [] :int)
+(def ^:private sz-load-font-result (delay (c-sizeof-load-font-result)))
+(def ^:private is-ok-off-load-font (delay (c-is-ok-offset-load-font)))
 (defn load-font [self path pt-size]
-  (let [sz (c-sizeof-load-font-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-load-font)]
+  (let [out (ffi/alloc @sz-load-font-result)]
     (try
       (c-load-font (:ptr self) path (count path) pt-size out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-load-font))
          {:ok? true :value nil}
-         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) false)})
+         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/load-font" sdl-error/message)
       (finally (ffi/free out))))
 )
@@ -44,17 +48,23 @@
 )
 
 (ffi/defcfn ^:private c-sizeof-sdl-event-struct "jolt_sizeof_sdl_event_mv1" [] :int)
+(def ^:private sz-sdl-event-struct (delay (c-sizeof-sdl-event-struct)))
 (ffi/defcfn ^:private c-offsetof-sdl-event-kind "jolt_offsetof_sdl_event_kind_mv1" [] :int)
+(def ^:private off-sdl-event-kind (delay (c-offsetof-sdl-event-kind)))
 (ffi/defcfn ^:private c-offsetof-sdl-event-key-code "jolt_offsetof_sdl_event_key_code_mv1" [] :int)
+(def ^:private off-sdl-event-key-code (delay (c-offsetof-sdl-event-key-code)))
 (ffi/defcfn ^:private c-offsetof-sdl-event-mouse-button "jolt_offsetof_sdl_event_mouse_button_mv1" [] :int)
+(def ^:private off-sdl-event-mouse-button (delay (c-offsetof-sdl-event-mouse-button)))
 (ffi/defcfn ^:private c-offsetof-sdl-event-mouse-x "jolt_offsetof_sdl_event_mouse_x_mv1" [] :int)
+(def ^:private off-sdl-event-mouse-x (delay (c-offsetof-sdl-event-mouse-x)))
 (ffi/defcfn ^:private c-offsetof-sdl-event-mouse-y "jolt_offsetof_sdl_event_mouse_y_mv1" [] :int)
+(def ^:private off-sdl-event-mouse-y (delay (c-offsetof-sdl-event-mouse-y)))
 (ffi/defcfn ^:private c-poll-event "jolt_sdl3_SdlApp_poll_event_mv1" [:pointer :pointer] :void)
 (defn poll-event [self]
-  (let [sz (c-sizeof-sdl-event-struct) out (ffi/alloc sz)]
+  (let [out (ffi/alloc @sz-sdl-event-struct)]
     (try
       (c-poll-event (:ptr self) out)
-      {:kind (ffi/read out :uint8 (c-offsetof-sdl-event-kind)) :key-code (ffi/read out :int (c-offsetof-sdl-event-key-code)) :mouse-button (ffi/read out :uint8 (c-offsetof-sdl-event-mouse-button)) :mouse-x (ffi/read out :float (c-offsetof-sdl-event-mouse-x)) :mouse-y (ffi/read out :float (c-offsetof-sdl-event-mouse-y))}
+      {:kind (ffi/read out :uint8 @off-sdl-event-kind) :key-code (ffi/read out :int @off-sdl-event-key-code) :mouse-button (ffi/read out :uint8 @off-sdl-event-mouse-button) :mouse-x (ffi/read out :float @off-sdl-event-mouse-x) :mouse-y (ffi/read out :float @off-sdl-event-mouse-y)}
       (finally (ffi/free out)))))
 
 (ffi/defcfn ^:private c-set-draw-color "sdl3_SdlApp_set_draw_color_mv1" [:pointer :uint8 :uint8 :uint8 :uint8] :void)
@@ -78,14 +88,16 @@
 (ffi/defcfn ^:private c-set-title "jolt_sdl3_SdlApp_set_title_mv1" [:pointer :string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-set-title-result "jolt_sizeof_sdl3_SdlApp_set_title_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-set-title "jolt_offsetof_sdl3_SdlApp_set_title_mv1_result_is_ok" [] :int)
+(def ^:private sz-set-title-result (delay (c-sizeof-set-title-result)))
+(def ^:private is-ok-off-set-title (delay (c-is-ok-offset-set-title)))
 (defn set-title [self title]
-  (let [sz (c-sizeof-set-title-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-set-title)]
+  (let [out (ffi/alloc @sz-set-title-result)]
     (try
       (c-set-title (:ptr self) title (count title) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-set-title))
          {:ok? true :value nil}
-         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) false)})
+         {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/set-title" sdl-error/message)
       (finally (ffi/free out))))
 )

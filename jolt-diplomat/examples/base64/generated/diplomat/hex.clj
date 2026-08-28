@@ -9,7 +9,7 @@
 (dr/defopaque Hex "b64_Hex_destroy_mv1")
 
 (ffi/defcfn ^:private c-new "b64_Hex_new_mv1" [] :pointer)
-(defn new [] (->Hex (c-new ) false))
+(defn new [] (->Hex (c-new ) (atom false)))
 
 (ffi/defcfn ^:private c-encode "jolt_b64_Hex_encode_mv1" [:pointer :size_t :pointer] :void)
 (defn encode [input]
@@ -21,14 +21,16 @@
 (ffi/defcfn ^:private c-decode "jolt_b64_Hex_decode_mv1" [:string :size_t :pointer :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-decode-result "jolt_sizeof_b64_Hex_decode_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-decode "jolt_offsetof_b64_Hex_decode_mv1_result_is_ok" [] :int)
+(def ^:private sz-decode-result (delay (c-sizeof-decode-result)))
+(def ^:private is-ok-off-decode (delay (c-is-ok-offset-decode)))
 (defn decode [input]
-  (let [sz (c-sizeof-decode-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-decode)]
+  (let [out (ffi/alloc @sz-decode-result)]
     (try
       (let [s (dr/writeable-capture (fn [w__] (c-decode input (count input) w__ out)))]
         (dr/unwrap-result!
-         (if (= 1 (ffi/read out :uint8 is-ok-off))
+         (if (= 1 (ffi/read out :uint8 @is-ok-off-decode))
            {:ok? true :value s}
-           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) false)})
+           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) (atom false))})
              "Hex/decode" base64-error/message)
       )
       (finally (ffi/free out))))

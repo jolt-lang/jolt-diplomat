@@ -11,14 +11,16 @@
 (ffi/defcfn ^:private c-open "jolt_sdl3_AudioStream_open_mv1" [:int :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-open-result "jolt_sizeof_sdl3_AudioStream_open_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-open "jolt_offsetof_sdl3_AudioStream_open_mv1_result_is_ok" [] :int)
+(def ^:private sz-open-result (delay (c-sizeof-open-result)))
+(def ^:private is-ok-off-open (delay (c-is-ok-offset-open)))
 (defn open [sample-rate]
-  (let [sz (c-sizeof-open-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-open)]
+  (let [out (ffi/alloc @sz-open-result)]
     (try
       (c-open sample-rate out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
-         {:ok? true :value (->AudioStream (ffi/read out :pointer 0) false)}
-         {:ok? false :error (audio-error/->AudioError (ffi/read out :pointer 0) false)})
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-open))
+         {:ok? true :value (->AudioStream (ffi/read out :pointer 0) (atom false))}
+         {:ok? false :error (audio-error/->AudioError (ffi/read out :pointer 0) (atom false))})
        "AudioStream/open" audio-error/message)
       (finally (ffi/free out))))
 )

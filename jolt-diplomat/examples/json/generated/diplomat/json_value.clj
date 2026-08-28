@@ -12,14 +12,16 @@
 (ffi/defcfn ^:private c-parse "jolt_json_JsonValue_parse_mv1" [:string :size_t :pointer] :void)
 (ffi/defcfn ^:private c-sizeof-parse-result "jolt_sizeof_json_JsonValue_parse_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-parse "jolt_offsetof_json_JsonValue_parse_mv1_result_is_ok" [] :int)
+(def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
+(def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [text]
-  (let [sz (c-sizeof-parse-result) out (ffi/alloc sz) is-ok-off (c-is-ok-offset-parse)]
+  (let [out (ffi/alloc @sz-parse-result)]
     (try
       (c-parse text (count text) out)
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 is-ok-off))
-         {:ok? true :value (->JsonValue (ffi/read out :pointer 0) false)}
-         {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) false)})
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+         {:ok? true :value (->JsonValue (ffi/read out :pointer 0) (atom false))}
+         {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) (atom false))})
        "JsonValue/parse" json-error/message)
       (finally (ffi/free out))))
 )
@@ -62,7 +64,7 @@
 )
 
 (ffi/defcfn ^:private c-array-get "json_JsonValue_array_get_mv1" [:pointer :uint64] :pointer)
-(defn array-get [self index] (let [p (c-array-get (:ptr self) index)] (when (not= 0 p) (->JsonValue p true))))
+(defn array-get [self index] (let [p (c-array-get (:ptr self) index)] (when (not= 0 p) (->JsonValue p (atom true)))))
 
 (ffi/defcfn ^:private c-object-get "jolt_json_JsonValue_object_get_mv1" [:pointer :string :size_t :pointer] :int)
 (defn object-get [self key]

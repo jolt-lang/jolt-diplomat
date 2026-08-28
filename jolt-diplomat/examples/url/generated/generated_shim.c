@@ -36,8 +36,8 @@ int jolt_url_Url_query_mv1(const Url* self, DiplomatWrite* write) {
 
 void jolt_url_Url_port_mv1(const Url* self, uint16_t* out_val, bool* out_is_ok) {
     url_Url_port_mv1_result r = url_Url_port_mv1(self);
-    *out_val = (uint16_t)r.ok;
     *out_is_ok = r.is_ok;
+    if (r.is_ok) { *out_val = (uint16_t)r.ok; }
 }
 
 void jolt_url_Url_to_string_mv1(const Url* self, DiplomatWrite* write) {

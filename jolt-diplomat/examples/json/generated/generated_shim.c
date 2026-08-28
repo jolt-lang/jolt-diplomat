@@ -26,14 +26,14 @@ JsonKind jolt_json_JsonValue_kind_mv1(const JsonValue* self) {
 
 void jolt_json_JsonValue_as_bool_mv1(const JsonValue* self, bool* out_val, bool* out_is_ok) {
     json_JsonValue_as_bool_mv1_result r = json_JsonValue_as_bool_mv1(self);
-    *out_val = (bool)r.ok;
     *out_is_ok = r.is_ok;
+    if (r.is_ok) { *out_val = (bool)r.ok; }
 }
 
 void jolt_json_JsonValue_as_f64_mv1(const JsonValue* self, double* out_val, bool* out_is_ok) {
     json_JsonValue_as_f64_mv1_result r = json_JsonValue_as_f64_mv1(self);
-    *out_val = (double)r.ok;
     *out_is_ok = r.is_ok;
+    if (r.is_ok) { *out_val = (double)r.ok; }
 }
 
 int jolt_json_JsonValue_as_str_mv1(const JsonValue* self, DiplomatWrite* write) {
@@ -43,8 +43,8 @@ int jolt_json_JsonValue_as_str_mv1(const JsonValue* self, DiplomatWrite* write) 
 
 void jolt_json_JsonValue_array_len_mv1(const JsonValue* self, uint64_t* out_val, bool* out_is_ok) {
     json_JsonValue_array_len_mv1_result r = json_JsonValue_array_len_mv1(self);
-    *out_val = (uint64_t)r.ok;
     *out_is_ok = r.is_ok;
+    if (r.is_ok) { *out_val = (uint64_t)r.ok; }
 }
 
 int jolt_json_JsonValue_object_get_mv1(const JsonValue* self, const char* key_data, size_t key_len, DiplomatWrite* write) {
