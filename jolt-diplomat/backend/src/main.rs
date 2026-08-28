@@ -576,8 +576,30 @@ fn gen_method(
     let fn_name = to_kebab(m.name.as_str());
     let has_self = m.param_self.is_some();
 
-    // Only skip owned-slice params (Strs) — Option<T> is now handled below.
-    let has_owned_slice = m.params.iter().any(|p| matches!(p.ty, Type::Slice(hir::Slice::Strs(_))));
+    // BUG FOUND ON REVIEW (fixed here): this only checked Slice::Strs
+    // (owned Vec<String>-shaped), missing the parallel owned-primitive-
+    // slice shape (Box<[u8]>, Slice::Primitive(MaybeOwn::Own, _)). The
+    // param branch further down builds is_mut from
+    // borrow.as_borrowed().unwrap_or(false) — for an OWNED slice,
+    // as_borrowed() is None, so it silently fell into the same false
+    // branch as an immutably-borrowed &[u8], generating a shim that
+    // treats Box<[u8]> as if it were &[u8] and constructs a
+    // DiplomatU8View from it. diplomat-tool's own C backend already
+    // hard-rejects this shape outright ("Owned slices are not supported
+    // in this backend") — confirmed by running a throwaway crate through
+    // bind.sh, which fails at the diplomat-tool header-generation step
+    // before this generator ever runs. So in the real bind.sh pipeline
+    // this generator's bad output is never reached. But running this
+    // binary directly (bypassing diplomat-tool, as this generator's own
+    // HIR lowering does independently) DOES silently accept the shape
+    // and emit a shim referencing a C function Diplomat's toolchain would
+    // never actually produce — confirmed directly. Fixed to reject
+    // loudly here too, instead of relying on diplomat-tool failing first.
+    let has_owned_slice = m.params.iter().any(|p| matches!(
+        p.ty,
+        Type::Slice(hir::Slice::Strs(_))
+            | Type::Slice(hir::Slice::Primitive(hir::MaybeOwn::Own, _))
+    ));
     if has_owned_slice {
         eprintln!("skipped {owner}::{} (owned-slice param — not supported)", m.name);
         return false;
