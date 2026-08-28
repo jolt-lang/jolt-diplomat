@@ -460,10 +460,46 @@ fn classify_return(
 
         ReturnType::Nullable(SuccessType::Write) => Some(ReturnKind::NullableWrite),
 
-        ReturnType::Fallible(st, _) => Some(ReturnKind::Fallible {
-            is_write: matches!(st, SuccessType::Write),
-            is_unit: matches!(st, SuccessType::Unit),
-        }),
+        // BUG FOUND ON REVIEW (fixed here): this used to match ANY
+        // ReturnType::Fallible and discard the success type entirely,
+        // keeping only is_write/is_unit. gen_method's non-write/non-unit
+        // branch (the `ok_val` construction) then unconditionally
+        // assumed the Ok value is a Box<Self> — i.e. an opaque of type
+        // `owner` — because that's the only shape any example crate's
+        // fallible method actually returns (every Result<T, E> here is
+        // either Result<Box<Self>, E> or Result<(), E>). A method
+        // returning Result<Box<OtherOpaque>, E>, Result<i32, E>, or
+        // Result<SomeStruct, E> would have silently wrapped the returned
+        // pointer as the WRONG opaque record type (still readable via
+        // dr/ptr!, since that only checks closed-atom — but every method
+        // called on it would pass a wrongly-typed pointer straight to C:
+        // silent type confusion, not caught by any existing guard). No
+        // example crate hits this, so it shipped undetected. Rather than
+        // silently mis-generate, only accept the shapes gen_method
+        // actually handles correctly (Unit, Write, and Opaque-of-owner);
+        // everything else is now a loud skip, matching this file's own
+        // "fail loudly on unsupported shape" rule.
+        ReturnType::Fallible(st, _) => match st {
+            SuccessType::Write => Some(ReturnKind::Fallible { is_write: true, is_unit: false }),
+            SuccessType::Unit => Some(ReturnKind::Fallible { is_write: false, is_unit: true }),
+            SuccessType::OutType(hir::OutType::Opaque(op)) => {
+                let target = tcx.resolve_opaque(op.tcx_id).name.as_str().to_string();
+                if target == owner {
+                    Some(ReturnKind::Fallible { is_write: false, is_unit: false })
+                } else {
+                    eprintln!(
+                        "skipped {owner}::{} (fallible return Box<{target}> where {target} != {owner} \
+                         — only Result<Box<Self>, E>, Result<(), E>, and Result<Write, E> are supported)",
+                        m.name
+                    );
+                    None
+                }
+            }
+            other => {
+                eprintln!("skipped {owner}::{} (fallible return success type {other:?} unsupported)", m.name);
+                None
+            }
+        },
 
         ReturnType::Infallible(SuccessType::OutType(hir::OutType::Slice(
             hir::Slice::Primitive(_, prim)
