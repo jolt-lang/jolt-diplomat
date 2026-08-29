@@ -91,7 +91,11 @@ jolt-diplomat/
     ├── semver/       — semver crate: cross-opaque method params
     ├── base64/       — base64 + hex: &[u8] slice params
     ├── json/         — serde_json: nullable opaque, enum return
-    └── chrono/       — chrono: struct return with mixed field types
+    ├── chrono/       — chrono: struct return with mixed field types
+    ├── markdown/     — pulldown-cmark: struct-by-value param, plain scalar returns
+    ├── callback/     — impl Fn(...) params: Jolt closures called from Rust
+    ├── sdl3/         — SDL3 window/renderer: a real GUI driven from Jolt
+    └── tunes/        — synth/mixer crate powering the sdl3 example's audio
 ```
 
 ## Usage
@@ -185,11 +189,19 @@ jolt run -m demo
 ### All examples at once
 
 ```bash
-for demo in url regex semver base64 json chrono; do
+for demo in url regex semver base64 json chrono markdown callback tunes; do
   echo "=== $demo ==="
   (cd examples/$demo/jolt-project && jolt run -m demo)
 done
 ```
+
+`sdl3` opens a window and runs its own event loop — run it on its own, not in the batch loop above:
+
+```bash
+(cd examples/sdl3/jolt-project && jolt run -m demo)
+```
+
+`tunes` plays audio through the system's default output device; it fails with `SDL_OpenAudioDevice failed` in headless/CI environments with no audio hardware — that's an environment limitation, not a bug.
 
 ### What each example demonstrates
 
@@ -201,6 +213,10 @@ done
 | `base64` | [`base64` + `hex`](https://crates.io/crates/base64) | `&[u8]` slice params |
 | `json` | [`serde_json`](https://crates.io/crates/serde_json) | nullable opaque return, enum return |
 | `chrono` | [`chrono`](https://crates.io/crates/chrono) | struct return with mixed field types, nullable opaque |
+| `markdown` | [`pulldown-cmark`](https://crates.io/crates/pulldown-cmark) | struct-by-value param with real behavioral effect, plain scalar returns |
+| `callback` | (synthetic `Reducer`) | `impl Fn(...)` params — Jolt closures called back into from Rust |
+| `sdl3` | [`sdl3`](https://crates.io/crates/sdl3) | a real windowed GUI (piano roll) driven entirely from Jolt |
+| `tunes` | (synthetic synth/mixer) | audio rendering; paired with `sdl3` for playback |
 
 ## Requirements
 
@@ -208,3 +224,14 @@ done
 - `diplomat-tool` 0.14–0.15 (`cargo install diplomat-tool --version "^0.15"`)
 - [Jolt](https://jolt-lang.net) v0.7+
 - `cc` (Xcode CLT on macOS)
+
+## Known limitations
+
+- Struct-by-value **params** support primitive, enum, `Option<primitive/enum>`, and nested-struct fields (flattened recursively to scalars at the FFI boundary). Struct-by-value **returns** support the same except `Option<...>` fields — the generator rejects those loudly rather than silently dropping them from the returned Clojure map.
+- `impl Fn(...)` callback params support primitive-in/primitive-out signatures only, invoked synchronously during the call and freed right after — see `examples/callback`. This matches Diplomat's own callback design; it isn't a shape for handing Jolt a long-lived handle into live Rust state (e.g. it can't express something like `egui`'s closure-based, mutably-borrowed UI builder API).
+- Owned slice params (`Box<[T]>`, `Vec<String>`) aren't supported — Diplomat's own C backend doesn't support owned primitive slices either, and this generator doesn't support owned string slices.
+- Tested against `diplomat-tool`/`diplomat_core` 0.10–0.15; 0.16 changes the HIR shape in ways not yet accounted for.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -4,10 +4,9 @@
   unwrapping, writeable strings, struct-by-value marshaling) live in one
   place, hand-written once, instead of being re-derived per binding.
 
-  This is the deliverable from PLAN.md Milestone 5. Nothing here is
-  Diplomat-specific beyond the shapes its C backend emits (DiplomatWriteable,
-  flat Result structs, opaque-behind-a-pointer) — it's a thin layer over
-  jolt.ffi."
+  Nothing here is Diplomat-specific beyond the shapes its C backend emits
+  (DiplomatWriteable, flat Result structs, opaque-behind-a-pointer) — it's
+  a thin layer over jolt.ffi."
   (:require [jolt.ffi :as ffi]))
 
 ;; -----------------------------------------------------------------------

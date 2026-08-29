@@ -1,7 +1,8 @@
 (ns demo
-  "PLAN.md 'done' criterion: constructs a Thingy, calls a writeable-returning
-  method, passes a by-value options struct, passes a slice, and triggers the
-  error path — no manual FFI code outside generated files + diplomat.runtime."
+  "Smoke test for diplomat.runtime + diplomat.thingy: constructs a Thingy,
+  calls a writeable-returning method, passes a by-value options struct,
+  passes a slice, and triggers the error path — no manual FFI code outside
+  generated files + diplomat.runtime."
   (:require [diplomat.thingy :as thingy]
             [diplomat.runtime :as dr]))
 

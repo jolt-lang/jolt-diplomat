@@ -1,9 +1,11 @@
 (ns diplomat.thingy
-  "TARGET for `diplomat-tool --jolt` codegen — this version is the FINAL,
-  doc-confirmed, empirically-verified-against-real-jolt-v0.7.13 shape.
-  Supersedes the pre-Milestone-1 version. Every line here has actually run.
-  See findings/milestone-4-findings.md for the native-interop.html
-  cross-check that confirmed this design against Jolt's own docs."
+  "Hand-written reference shape for jolt-diplomat-backend's codegen —
+  every generated .clj file should look like this. Empirically verified
+  against real Jolt (v0.7.13+); every line here has actually run.
+  Synthetic Thingy type exercises the opaque lifecycle, a fallible
+  constructor, a plain scalar method, a struct-by-value param with a
+  writeable string return, and a slice param — see runtime/src/demo.clj
+  for the smoke test that exercises all of it."
   (:require [jolt.ffi :as ffi]
             [diplomat.runtime :as dr]))
 
