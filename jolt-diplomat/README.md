@@ -100,13 +100,46 @@ jolt-diplomat/
 
 ## Usage
 
-### 1. Annotate your crate
+### 1. Set up the crate
+
+```toml
+# my_capi/Cargo.toml
+[package]
+name = "my_capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "my_capi"
+crate-type = ["cdylib"]
+
+[dependencies]
+diplomat = ">=0.10,<0.16"
+diplomat-runtime = ">=0.10,<0.16"
+```
 
 ```rust
+// my_capi/src/lib.rs
 #[diplomat::bridge]
 mod ffi {
+    use diplomat_runtime::DiplomatWrite;
+    use std::fmt::Write as _;
+
     #[diplomat::opaque]
     pub struct MyType(inner::MyType);
+
+    #[diplomat::opaque]
+    pub struct MyError(String);
+
+    impl MyError {
+        // Required whenever an opaque is used as a Result's error type —
+        // the generator always emits a call to this (see Known limitations
+        // below), so a fallible method whose error type lacks it produces
+        // a binding that fails at first call, not at generation time.
+        pub fn message(&self, write: &mut DiplomatWrite) {
+            let _ = write.write_str(&self.0);
+        }
+    }
 
     impl MyType {
         pub fn parse(s: &str) -> Result<Box<MyType>, Box<MyError>> { ... }
@@ -142,6 +175,21 @@ Outputs: `generated/diplomat/*.clj`, `generated/generated_shim.c`, `libmy_capi_s
 (dr/with-opaque [x (mt/parse "hello")]
   (println (mt/value x)))
 ```
+
+### If a method genuinely blocks (I/O, a lock, a sleep)
+
+Add a doc comment line reading exactly `jolt-diplomat: blocking` and re-run `bind.sh` — the generated binding gets `jolt.ffi`'s `:blocking` flag, so the call doesn't pin the garbage collector for every other thread while it waits:
+
+```rust
+impl MyType {
+    /// Writes to disk.
+    ///
+    /// jolt-diplomat: blocking
+    pub fn save(&self, path: &str) -> Result<(), Box<MyError>> { ... }
+}
+```
+
+Skip this for everything else — most methods (parsing, math, data transforms) are fast enough that it isn't worth the runtime's overhead. A `&str`/`String` param works fine on a blocking method (the generator routes it through a foreign-allocated buffer automatically) — see Known limitations below for why that's necessary.
 
 ## Running the examples
 
@@ -230,6 +278,8 @@ done
 - Struct-by-value **params** support primitive, enum, `Option<primitive/enum>`, and nested-struct fields (flattened recursively to scalars at the FFI boundary). Struct-by-value **returns** support the same except `Option<...>` fields — the generator rejects those loudly rather than silently dropping them from the returned Clojure map.
 - `impl Fn(...)` callback params support primitive-in/primitive-out signatures only, invoked synchronously during the call and freed right after — see `examples/callback`. This matches Diplomat's own callback design; it isn't a shape for handing Jolt a long-lived handle into live Rust state (e.g. it can't express something like `egui`'s closure-based, mutably-borrowed UI builder API).
 - Owned slice params (`Box<[T]>`, `Vec<String>`) aren't supported — Diplomat's own C backend doesn't support owned primitive slices either, and this generator doesn't support owned string slices.
+- **An opaque used as a fallible method's error type must implement `message(&self, write: &mut DiplomatWrite)`.** The generator always emits a call to `{error-type}/message` when unwrapping a `Result` whose error is an opaque — it doesn't check whether that method actually exists on the Rust side. An error type missing it compiles and generates fine, then fails the first time that fallible method is actually called (`No such var: ...error/message`), not at generation time. Every error type in `examples/` defines this method; follow that pattern for your own.
+- Marking a method `jolt-diplomat: blocking` (see Usage above) is safe with any param shape, including `&str`/`String` — the generator automatically routes a blocking method's string params through a foreign-allocated buffer instead of a bare `:string` arg, since `jolt.ffi`'s `:blocking` calling convention (Chez's `__collect_safe`) rejects `:string` outright for GC-safety reasons. If you ever see a generation-time panic mentioning `:string argument`, it means some other param shape reached `:blocking` without going through that routing — file it as a bug against this generator.
 - Tested against `diplomat-tool`/`diplomat_core` 0.10–0.15; 0.16 changes the HIR shape in ways not yet accounted for.
 
 ## License
