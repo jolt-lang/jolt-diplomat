@@ -739,6 +739,8 @@ fn gen_method(
     let mut arg_specs: Vec<ArgSpec> = vec![];
     let mut buffer_wraps: Vec<(String, String, String)> = vec![];
     let mut callback_wraps: Vec<String> = vec![];
+    let mut string_wraps: Vec<(String, String)> = vec![]; // (buf-var, s-expr) — see dr/with-c-string
+    let method_is_blocking = is_blocking(m);
 
     if has_self {
         let self_const = match &m.param_self {
@@ -778,8 +780,21 @@ fn gen_method(
             Type::Slice(hir::Slice::Str(_, hir::StringEncoding::Utf8 | hir::StringEncoding::UnvalidatedUtf8)) => {
                 c_params.push(format!("const char* {cname}_data"));
                 c_params.push(format!("size_t {cname}_len"));
-                arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone() });
-                arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
+                if method_is_blocking {
+                    // :blocking (__collect_safe) forbids a bare :string
+                    // arg — see dr/with-c-string's doc comment in
+                    // runtime.clj for why. Copy to a foreign-allocated
+                    // buffer first (outside the GC-managed heap, so the
+                    // collector running concurrently during the blocking
+                    // call can't invalidate it), pass that as :pointer.
+                    let buf_var = format!("{pname}-cstr");
+                    arg_specs.push(ArgSpec { clj_type: ":pointer".into(), call_expr: buf_var.clone() });
+                    arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
+                    string_wraps.push((buf_var, pname.clone()));
+                } else {
+                    arg_specs.push(ArgSpec { clj_type: ":string".into(), call_expr: pname.clone() });
+                    arg_specs.push(ArgSpec { clj_type: ":size_t".into(), call_expr: format!("(count {pname})") });
+                }
                 call_args.push(format!("(DiplomatStringView){{ .data = {cname}_data, .len = {cname}_len }}"));
             }
             Type::Slice(hir::Slice::Str(_, hir::StringEncoding::UnvalidatedUtf16)) => {
@@ -1195,10 +1210,11 @@ fn gen_method(
     }
 
     // Each wrap below opens exactly one unclosed form (one `let` per
-    // callback, one `with-primitive-buffer` per buffer) — one `)` per wrap
-    // in suffix_close closes it. If a future wrap ever needs more than one
-    // top-level form, it must push that many closing parens itself here,
-    // or this count silently desyncs and emits unbalanced Clojure.
+    // callback, one `with-primitive-buffer` per buffer, one `with-c-string`
+    // per blocking-method string param) — one `)` per wrap in suffix_close
+    // closes it. If a future wrap ever needs more than one top-level form,
+    // it must push that many closing parens itself here, or this count
+    // silently desyncs and emits unbalanced Clojure.
     let mut indent = String::new();
     let mut prefix_lines: Vec<String> = vec![];
     let mut suffix_close = String::new();
@@ -1211,6 +1227,11 @@ fn gen_method(
         prefix_lines.push(format!("{indent}(dr/with-primitive-buffer [{buf_var} {elem_type} {seq_expr}]"));
         indent.push_str("  ");
         suffix_close.push(')'); // closes this one `with-primitive-buffer`
+    }
+    for (buf_var, s_expr) in &string_wraps {
+        prefix_lines.push(format!("{indent}(dr/with-c-string [{buf_var} {s_expr}]"));
+        indent.push_str("  ");
+        suffix_close.push(')'); // closes this one `with-c-string`
     }
 
     let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
@@ -1514,17 +1535,44 @@ mod tests {
         );
     }
 
-    // Confirmed directly against real Jolt (0.7.15): a :blocking defcfn
-    // whose shim takes a :string argument fails at namespace LOAD time,
-    // not first call — "string argument not allowed with __collect_safe
-    // procedure" — the worst place for this to surface. First version of
-    // examples/tunes's export_wav fix hit exactly this: marked blocking
-    // (genuinely is — disk I/O) but its path param crosses as :string,
-    // and the crate silently generated a defcfn that crashed on load.
-    // blocking_flag_for must catch this at generation time instead.
+    // blocking_flag_for's own :string check, exercised directly rather
+    // than through gen_method — the &str/String param branch below now
+    // routes a blocking method's string params through dr/with-c-string
+    // instead of a bare :string arg (see the next test), so :string never
+    // actually reaches blocking_flag_for via that path any more. This
+    // keeps the check itself covered as a safety net for any future
+    // param shape that might emit :string without going through the
+    // same with-c-string guard.
     #[test]
     #[should_panic(expected = ":string argument")]
-    fn blocking_marker_on_string_arg_panics_at_generation_time() {
+    fn blocking_flag_for_panics_on_string_arg_directly() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Writer;
+
+                impl Writer {
+                    /// jolt-diplomat: blocking
+                    pub fn save(&self) -> u32 { 0 }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Writer", "save");
+        blocking_flag_for("Writer", m, &[":string".to_string()]);
+    }
+
+    // The actual fix: confirmed directly against real Jolt (0.7.15) that
+    // a :blocking defcfn taking a bare :string argument fails at
+    // NAMESPACE LOAD time — "string argument not allowed with
+    // __collect_safe procedure". A &str param on a blocking method now
+    // copies into a foreign-allocated buffer via dr/with-c-string before
+    // the call (outside the GC-managed heap, so it can't be invalidated
+    // by the concurrent collection :blocking/__collect_safe permits),
+    // passing that buffer as :pointer instead of the string as :string —
+    // this is examples/tunes's export_wav shape exactly.
+    #[test]
+    fn blocking_method_with_string_param_uses_with_c_string() {
         let tcx = lower(r#"
             #[diplomat::bridge]
             mod ffi {
@@ -1543,7 +1591,21 @@ mod tests {
         let mut out = String::new();
         let mut shim_c = String::new();
         let mut extra_requires = std::collections::BTreeSet::new();
-        gen_method(&tcx, "Writer", m, &mut out, &mut shim_c, &mut extra_requires);
+        let generated = gen_method(&tcx, "Writer", m, &mut out, &mut shim_c, &mut extra_requires);
+        assert!(generated, "blocking method with a &str param must still generate a binding");
+        assert!(
+            out.contains(":blocking"),
+            "save's generated defcfn must still carry :blocking, got:\n{out}"
+        );
+        assert!(
+            out.contains("dr/with-c-string"),
+            "save's path param must route through dr/with-c-string, got:\n{out}"
+        );
+        assert!(
+            !out.contains(":string"),
+            "save's generated defcfn must NOT take a bare :string arg — that's the exact \
+             shape __collect_safe rejects at namespace load. got:\n{out}"
+        );
     }
 }
 

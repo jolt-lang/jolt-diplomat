@@ -50,20 +50,22 @@
   )
 )
 
-(ffi/defcfn ^:private c-export-wav "jolt_tunes_TunesMixer_export_wav_mv1" [:pointer :string :size_t :uint :pointer] :void)
+(ffi/defcfn ^:private c-export-wav "jolt_tunes_TunesMixer_export_wav_mv1" [:pointer :pointer :size_t :uint :pointer] :void :blocking)
 (ffi/defcfn ^:private c-sizeof-export-wav-result "jolt_sizeof_tunes_TunesMixer_export_wav_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-export-wav "jolt_offsetof_tunes_TunesMixer_export_wav_mv1_result_is_ok" [] :int)
 (def ^:private sz-export-wav-result (delay (c-sizeof-export-wav-result)))
 (def ^:private is-ok-off-export-wav (delay (c-is-ok-offset-export-wav)))
 (defn export-wav [self path sample-rate]
-  (let [out (ffi/alloc @sz-export-wav-result)]
-    (try
-      (c-export-wav (dr/ptr! self) path (count path) sample-rate out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-export-wav))
-         {:ok? true :value nil}
-         {:ok? false :error (tunes-error/->TunesError (ffi/read out :pointer 0) (atom false))})
-       "TunesMixer/export-wav" tunes-error/message)
-      (finally (ffi/free out))))
+  (dr/with-c-string [path-cstr path]
+    (let [out (ffi/alloc @sz-export-wav-result)]
+      (try
+        (c-export-wav (dr/ptr! self) path-cstr (count path) sample-rate out)
+        (dr/unwrap-result!
+         (if (= 1 (ffi/read out :uint8 @is-ok-off-export-wav))
+           {:ok? true :value nil}
+           {:ok? false :error (tunes-error/->TunesError (ffi/read out :pointer 0) (atom false))})
+         "TunesMixer/export-wav" tunes-error/message)
+        (finally (ffi/free out))))
+  )
 )
 

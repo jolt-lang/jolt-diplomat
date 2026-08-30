@@ -93,14 +93,7 @@ mod ffi {
 
         /// Writes the rendered mix to a WAV file on disk.
         ///
-        /// Genuinely blocking (disk I/O) but can't carry jolt-diplomat's
-        /// blocking marker: Jolt's :blocking (__collect_safe) calling
-        /// convention rejects :string arguments outright ("string
-        /// argument not allowed with __collect_safe procedure"), and this
-        /// shim's path param is exactly that — confirmed directly, not a
-        /// guess. See gen_method's is_blocking doc comment in
-        /// backend/src/main.rs for the general rule this is the
-        /// documented exception to.
+        /// jolt-diplomat: blocking
         pub fn export_wav(
             &mut self,
             path: &DiplomatStr,

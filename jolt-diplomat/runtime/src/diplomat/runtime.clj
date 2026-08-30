@@ -129,6 +129,35 @@
        ~@body
        (finally (ffi/free ~buf-sym)))))
 
+;; A :blocking defcfn (jolt.ffi's __collect_safe convention — see
+;; jolt-lang.net/docs/native-interop.html) cannot take a bare :string
+;; argument: __collect_safe releases Chez's collector lock for the call's
+;; duration, letting GC run concurrently, including relocating live
+;; heap objects; a Scheme string is exactly such an object, and a raw
+;; char* into its payload would be invalidated the instant a moving
+;; collection ran mid-call. Confirmed directly against real Jolt
+;; (0.7.15): "string argument not allowed with __collect_safe
+;; procedure". The fix (from Chez's own docs on the restriction): copy
+;; the string into a foreign-allocated buffer BEFORE the blocking call —
+;; that memory isn't GC-owned, so it can't move. with-c-string does
+;; exactly that: ffi/string->ptr allocates a real, null-terminated,
+;; foreign-owned C string outside the Scheme heap (confirmed empirically:
+;; returns a native pointer, freeable with ffi/free, independent of GC).
+;; A generated blocking method with a &str/String param passes buf-sym
+;; (the buffer) as :pointer, plus (count s) as :size_t, instead of the
+;; string itself as :string — same DiplomatStringView shape the shim
+;; reconstructs either way; only the Jolt-side arg type and marshaling
+;; differ.
+(defmacro with-c-string
+  "Copies s into a temp foreign-owned C string buffer, in scope for body,
+  freeing it afterward. Use for a :blocking defcfn's string params —
+  __collect_safe forbids passing a bare :string directly."
+  [[buf-sym s-expr] & body]
+  `(let [~buf-sym (ffi/string->ptr ~s-expr)]
+     (try
+       ~@body
+       (finally (ffi/free ~buf-sym)))))
+
 ;; -----------------------------------------------------------------------
 ;; Result<T, E> -> ex-info.
 ;;
