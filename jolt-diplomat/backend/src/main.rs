@@ -566,6 +566,62 @@ fn classify_return(
     }
 }
 
+// jolt.ffi's defcfn takes a trailing :blocking flag (same position as
+// foreign-callable's :collect-safe) telling the runtime this call may
+// wait (I/O, a lock, a sleep) — without it, a thread parked in a foreign
+// call pins the GC for every other thread for the call's duration, not
+// just the calling one. Diplomat's #[diplomat::attr(...)] vocabulary is
+// closed (disable, rename, namespace, constructor, stringifier,
+// comparison, named_constructor, getter, setter, custom_extra_code,
+// indexer, error, default_value — verified against diplomat_core's
+// attrs.rs; there is no generic custom-metadata slot), so this can't be
+// a real Diplomat attribute. Every method's doc comment IS something
+// Diplomat already parses and hands to every backend (hir::Method.docs),
+// so an explicit marker line there is the closest available thing to an
+// attribute: opt-in, unambiguous, and not a guess from the function's
+// name. A method whose Rust doc comment contains a line reading exactly
+// `jolt-diplomat: blocking` gets :blocking on its generated defcfn.
+fn is_blocking(m: &hir::Method) -> bool {
+    if m.docs.is_empty() {
+        return false;
+    }
+    let text = m.docs.to_markdown(
+        hir::DocsTypeReferenceSyntax::SquareBrackets,
+        &hir::DocsUrlGenerator::with_base_urls(None, Default::default()),
+    );
+    text.lines().any(|l| l.trim() == "jolt-diplomat: blocking")
+}
+
+/// Confirmed directly (not a guess): Jolt's :blocking (__collect_safe)
+/// calling convention rejects :string arguments outright — "string
+/// argument not allowed with __collect_safe procedure" — even though a
+/// :string-taking call is exactly the shape most likely to need
+/// :blocking in practice (a path, a URL, anything read from). A method
+/// marked blocking whose shim signature includes a :string arg would
+/// silently produce a defcfn that crashes on namespace load, not on
+/// first call — the worst possible place for this to surface. Panics
+/// loudly instead, matching this file's "fail loudly" rule, so the
+/// crate author sees it at generation time with a fix (route the string
+/// through :pointer + :size_t, the same DiplomatStringView flattening
+/// the shimmed &str/String param path already does elsewhere, then
+/// re-mark it blocking) instead of a runtime AOT-compile crash.
+fn blocking_flag_for(owner: &str, m: &hir::Method, arg_types: &[String]) -> &'static str {
+    if !is_blocking(m) {
+        return "";
+    }
+    if arg_types.iter().any(|t| t == ":string") {
+        panic!(
+            "jolt-diplomat-backend: {owner}::{} is marked `jolt-diplomat: blocking` but its \
+             generated shim takes a :string argument — Jolt's :blocking calling convention \
+             rejects :string args (confirmed: \"string argument not allowed with \
+             __collect_safe procedure\"). Remove the blocking marker, or restructure the \
+             param so it doesn't cross as a bare :string.",
+            m.name
+        );
+    }
+    " :blocking"
+}
+
 // Returns false if the method was skipped (unsupported shape).
 fn gen_method(
     tcx: &hir::TypeContext,
@@ -647,7 +703,8 @@ fn gen_method(
             _ => unreachable!(),
         };
         let c_sym = m.abi_name.to_string();
-        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty})",
+        let blocking_flag = blocking_flag_for(owner, m, &arg_types);
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{c_sym}\" [{}] {ret_ty}{blocking_flag})",
             arg_types.join(" "));
         let call = format!("(c-{fn_name} {})", call_exprs.join(" "));
         let body = match &rk {
@@ -1033,7 +1090,8 @@ fn gen_method(
             })
             .collect();
 
-        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
+        let blocking_flag = blocking_flag_for(owner, m, &shim_arg_types);
+        let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty}{blocking_flag})",
             shim_arg_types.join(" "));
         let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
         let _ = writeln!(out, "  (let [out (ffi/alloc @sz-{struct_kebab}-struct)]");
@@ -1045,7 +1103,8 @@ fn gen_method(
         return true;
     }
 
-    let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty})",
+    let blocking_flag = blocking_flag_for(owner, m, &shim_arg_types);
+    let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty}{blocking_flag})",
         shim_arg_types.join(" "));
 
     let mut body_lines: Vec<String> = vec![];
@@ -1357,6 +1416,134 @@ mod tests {
             out.contains("with-primitive-buffer"),
             "a borrowed &[u8] param must go through dr/with-primitive-buffer"
         );
+    }
+
+    // Diplomat's #[diplomat::attr(...)] vocabulary is closed (verified
+    // against diplomat_core's attrs.rs — no generic custom-metadata
+    // slot), so a marker line in the method's doc comment is the closest
+    // available thing to an attribute for telling the generator a method
+    // blocks (I/O, a lock, a sleep) and needs jolt.ffi's :blocking flag —
+    // without it, a thread parked in that foreign call pins the GC for
+    // every other thread, not just the calling one.
+    #[test]
+    fn doc_marker_line_is_detected_as_blocking() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Writer;
+
+                impl Writer {
+                    /// Writes to disk.
+                    ///
+                    /// jolt-diplomat: blocking
+                    pub fn save(&self, path: &str) -> u32 {
+                        path.len() as u32
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Writer", "save");
+        assert!(is_blocking(m), "the jolt-diplomat: blocking marker line must be detected");
+    }
+
+    #[test]
+    fn ordinary_doc_comment_is_not_blocking() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Writer;
+
+                impl Writer {
+                    /// Computes the length of a string. Fast, no I/O.
+                    pub fn len_of(&self, s: &str) -> u32 {
+                        s.len() as u32
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Writer", "len_of");
+        assert!(!is_blocking(m), "an ordinary doc comment must not be mistaken for the marker");
+    }
+
+    // Closes the loop through actual codegen, not just is_blocking in
+    // isolation — a regression could live in how gen_method threads the
+    // flag into the emitted defcfn, not just in detection.
+    #[test]
+    fn blocking_marker_emits_flag_on_generated_defcfn() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Writer;
+
+                impl Writer {
+                    // Non-string param deliberately — this test covers flag
+                    // propagation through codegen; the marker/:string-arg
+                    // interaction has its own dedicated test below.
+                    /// jolt-diplomat: blocking
+                    pub fn save(&self, retries: u32) -> u32 {
+                        retries
+                    }
+
+                    pub fn len_of(&self, s: &str) -> u32 {
+                        s.len() as u32
+                    }
+                }
+            }
+        "#);
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+
+        let m_save = find_opaque_method(&tcx, "Writer", "save");
+        assert!(gen_method(&tcx, "Writer", m_save, &mut out, &mut shim_c, &mut extra_requires));
+        assert!(
+            out.contains(":blocking"),
+            "save's generated defcfn must carry :blocking, got:\n{out}"
+        );
+
+        let before_len_of = out.len();
+        let m_len_of = find_opaque_method(&tcx, "Writer", "len_of");
+        assert!(gen_method(&tcx, "Writer", m_len_of, &mut out, &mut shim_c, &mut extra_requires));
+        let len_of_section = &out[before_len_of..];
+        assert!(
+            !len_of_section.contains(":blocking"),
+            "len_of has no marker and must NOT carry :blocking, got:\n{len_of_section}"
+        );
+    }
+
+    // Confirmed directly against real Jolt (0.7.15): a :blocking defcfn
+    // whose shim takes a :string argument fails at namespace LOAD time,
+    // not first call — "string argument not allowed with __collect_safe
+    // procedure" — the worst place for this to surface. First version of
+    // examples/tunes's export_wav fix hit exactly this: marked blocking
+    // (genuinely is — disk I/O) but its path param crosses as :string,
+    // and the crate silently generated a defcfn that crashed on load.
+    // blocking_flag_for must catch this at generation time instead.
+    #[test]
+    #[should_panic(expected = ":string argument")]
+    fn blocking_marker_on_string_arg_panics_at_generation_time() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Writer;
+
+                impl Writer {
+                    /// jolt-diplomat: blocking
+                    pub fn save(&self, path: &str) -> u32 {
+                        path.len() as u32
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Writer", "save");
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+        gen_method(&tcx, "Writer", m, &mut out, &mut shim_c, &mut extra_requires);
     }
 }
 

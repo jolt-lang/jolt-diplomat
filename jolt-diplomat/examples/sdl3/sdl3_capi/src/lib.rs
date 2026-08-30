@@ -183,6 +183,8 @@ mod audio_ffi {
 
     impl AudioStream {
         /// Open default audio device, stereo f32 at given sample rate.
+        ///
+        /// jolt-diplomat: blocking
         pub fn open(sample_rate: i32) -> Result<Box<AudioStream>, Box<AudioError>> {
             use sdl3::sys::audio::*;
             use sdl3::sys::init::{SDL_InitSubSystem, SDL_INIT_AUDIO};

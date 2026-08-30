@@ -8,7 +8,7 @@
 
 (dr/defopaque AudioStream "sdl3_AudioStream_destroy_mv1")
 
-(ffi/defcfn ^:private c-open "jolt_sdl3_AudioStream_open_mv1" [:int :pointer] :void)
+(ffi/defcfn ^:private c-open "jolt_sdl3_AudioStream_open_mv1" [:int :pointer] :void :blocking)
 (ffi/defcfn ^:private c-sizeof-open-result "jolt_sizeof_sdl3_AudioStream_open_mv1_result" [] :int)
 (ffi/defcfn ^:private c-is-ok-offset-open "jolt_offsetof_sdl3_AudioStream_open_mv1_result_is_ok" [] :int)
 (def ^:private sz-open-result (delay (c-sizeof-open-result)))
