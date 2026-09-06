@@ -1590,7 +1590,7 @@ mod tests {
         blocking_flag_for("Writer", m, &[":string".to_string()]);
     }
 
-    // The actual fix: confirmed directly against real Jolt (0.7.15) that
+    // The actual fix: confirmed directly against real Jolt (0.7.15+) that
     // a :blocking defcfn taking a bare :string argument fails at
     // NAMESPACE LOAD time — "string argument not allowed with
     // __collect_safe procedure". A &str param on a blocking method now
