@@ -1143,14 +1143,9 @@ fn gen_method(
         let _ = writeln!(out, "(ffi/defcfn ^:private c-{fn_name} \"{shim_sym}\" [{}] {clj_ret_ty}{blocking_flag}{variadic_flag})",
             shim_arg_types.join(" "));
         let _ = writeln!(out, "(defn {fn_name} [{}]", public_params.join(" "));
-        // ffi/with-alloc is documented but not available in jolt.ffi as of
-        // 0.7.x — verified: no such symbol exists in the runtime or any
-        // generated file in this repo. Use alloc+try/finally instead.
-        let _ = writeln!(out, "  (let [out (ffi/alloc @sz-{struct_kebab}-struct)]");
-        let _ = writeln!(out, "    (try");
-        let _ = writeln!(out, "      (c-{fn_name} {})", shim_call_exprs.join(" "));
-        let _ = writeln!(out, "      {{{}}}", reads.join(" "));
-        let _ = writeln!(out, "      (finally (ffi/free out)))))");
+        let _ = writeln!(out, "  (ffi/with-alloc [out @sz-{struct_kebab}-struct]");
+        let _ = writeln!(out, "    (c-{fn_name} {})", shim_call_exprs.join(" "));
+        let _ = writeln!(out, "    {{{}}}))", reads.join(" "));
         let _ = writeln!(out);
         return true;
     }
@@ -1190,36 +1185,31 @@ fn gen_method(
                 format!("({err_alias}/->{err_name} (ffi/read out :pointer 0) (atom false))"),
             None => "(ffi/read out :int 0)".to_string(),
         };
-        // ffi/with-alloc is documented but not available in jolt.ffi as of
-        // 0.7.x — use alloc+try/finally for scratch result buffers instead.
         if is_write {
             let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
             let msg_suffix = msg_fn_suffix(&opaque_error, &fn_name);
-            body_lines.push(format!("(let [out (ffi/alloc @sz-{fn_name}-result)]"));
-            body_lines.push("  (try".to_string());
-            body_lines.push(format!("    (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
-            body_lines.push("      (dr/unwrap-result!".to_string());
-            body_lines.push(format!("       (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
-            body_lines.push("         {:ok? true :value s}".to_string());
-            body_lines.push(format!("         {{:ok? false :error {err_read}}})"));
-            body_lines.push(format!("      {msg_suffix}")); // closes unwrap-result!
-            body_lines.push("    )".to_string());           // closes let [s ...]
-            body_lines.push("    (finally (ffi/free out))))".to_string());
+            body_lines.push(format!("(ffi/with-alloc [out @sz-{fn_name}-result]"));
+            body_lines.push(format!("  (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
+            body_lines.push("    (dr/unwrap-result!".to_string());
+            body_lines.push(format!("     (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
+            body_lines.push("       {:ok? true :value s}".to_string());
+            body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
+            body_lines.push(format!("    {msg_suffix}")); // closes unwrap-result!
+            body_lines.push("  ))".to_string());          // closes let [s ...] and with-alloc
         } else {
             let ok_val = if matches!(rk, ReturnKind::Fallible { is_unit: true, .. }) {
                 "nil".to_string()
             } else {
                 format!("(->{owner} (ffi/read out :pointer 0) (atom false))")
             };
-            body_lines.push(format!("(let [out (ffi/alloc @sz-{fn_name}-result)]"));
-            body_lines.push("  (try".to_string());
-            body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-            body_lines.push("    (dr/unwrap-result!".to_string());
-            body_lines.push(format!("     (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
-            body_lines.push(format!("       {{:ok? true :value {ok_val}}}"));
-            body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
+            body_lines.push(format!("(ffi/with-alloc [out @sz-{fn_name}-result]"));
+            body_lines.push(format!("  (c-{fn_name} {})", shim_call_exprs.join(" ")));
+            body_lines.push("  (dr/unwrap-result!".to_string());
+            body_lines.push(format!("   (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
+            body_lines.push(format!("     {{:ok? true :value {ok_val}}}"));
+            body_lines.push(format!("     {{:ok? false :error {err_read}}})"));
             body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
-            body_lines.push("    (finally (ffi/free out))))".to_string());
+            body_lines.push(")".to_string()); // closes with-alloc
         }
     } else if is_nullable_write {
         let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
@@ -1228,18 +1218,16 @@ fn gen_method(
         let inner_call = format!("(c-{fn_name} {})", exprs_w_as_arg.join(" "));
         body_lines.push(format!("(dr/writeable-capture (fn [w__] {inner_call}))"))
     } else if let ReturnKind::BorrowedSlice { jolt_ty, .. } = &rk {
-        body_lines.push(format!("(let [data-out (ffi/alloc 8) len-out (ffi/alloc 8)]"));
-        body_lines.push("  (try".to_string());
+        body_lines.push("(ffi/with-alloc [data-out 8]".to_string());
+        body_lines.push("  (ffi/with-alloc [len-out 8]".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
-        body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))"));
-        body_lines.push("    (finally (ffi/free data-out) (ffi/free len-out))))".to_string());
+        body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))))"));
     } else if let ReturnKind::NullablePrim { jolt_ty, .. } = &rk {
-        body_lines.push(format!("(let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]"));
-        body_lines.push("  (try".to_string());
+        body_lines.push("(ffi/with-alloc [out-val 8]".to_string());
+        body_lines.push("  (ffi/with-alloc [out-is-ok 1]".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val {jolt_ty} 0))"));
-        body_lines.push("    (finally (ffi/free out-val) (ffi/free out-is-ok))))".to_string());
+        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val {jolt_ty} 0))))"));
     } else if let ReturnKind::Enum { alias, .. } = &rk {
         body_lines.push(format!("({alias}/int->kw (c-{fn_name} {}))", shim_call_exprs.join(" ")));
     } else if let ReturnKind::Opaque { target } = &rk {
