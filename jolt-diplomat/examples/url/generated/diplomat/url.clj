@@ -14,15 +14,14 @@
 (def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
 (def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [input]
-  (let [out (ffi/alloc @sz-parse-result)]
-    (try
-      (c-parse input (count input) out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
-         {:ok? true :value (->Url (ffi/read out :pointer 0) (atom false))}
-         {:ok? false :error (url-error/->UrlError (ffi/read out :pointer 0) (atom false))})
+  (ffi/with-alloc [out @sz-parse-result]
+    (c-parse input (count input) out)
+    (dr/unwrap-result!
+     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+       {:ok? true :value (->Url (ffi/read out :pointer 0) (atom false))}
+       {:ok? false :error (url-error/->UrlError (ffi/read out :pointer 0) (atom false))})
        "Url/parse" url-error/message)
-      (finally (ffi/free out))))
+  )
 )
 
 (ffi/defcfn ^:private c-scheme "jolt_url_Url_scheme_mv1" [:pointer :pointer] :void)
@@ -47,11 +46,10 @@
 
 (ffi/defcfn ^:private c-port "jolt_url_Url_port_mv1" [:pointer :pointer :pointer] :void)
 (defn port [self]
-  (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
-    (try
+  (ffi/with-alloc [out-val 8]
+    (ffi/with-alloc [out-is-ok 1]
       (c-port (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint 0))
-      (finally (ffi/free out-val) (ffi/free out-is-ok))))
+      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint 0))))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_url_Url_to_string_mv1" [:pointer :pointer] :void)
@@ -69,9 +67,7 @@
 (def ^:private off-url-info-path-len (delay (c-offsetof-url-info-path-len)))
 (ffi/defcfn ^:private c-info "jolt_url_Url_info_mv1" [:pointer :pointer] :void)
 (defn info [self]
-  (let [out (ffi/alloc @sz-url-info-struct)]
-    (try
-      (c-info (dr/ptr! self) out)
-      {:port (dr/read-u16 out @off-url-info-port) :has-port (ffi/read out :uint8 @off-url-info-has-port) :path-len (ffi/read out :uint @off-url-info-path-len)}
-      (finally (ffi/free out)))))
+  (ffi/with-alloc [out @sz-url-info-struct]
+    (c-info (dr/ptr! self) out)
+    {:port (dr/read-u16 out @off-url-info-port) :has-port (ffi/read out :uint8 @off-url-info-has-port) :path-len (ffi/read out :uint @off-url-info-path-len)}))
 

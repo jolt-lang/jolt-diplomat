@@ -17,15 +17,14 @@
 (def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
 (def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [s]
-  (let [out (ffi/alloc @sz-parse-result)]
-    (try
-      (c-parse s (count s) out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
-         {:ok? true :value (->DateTime (ffi/read out :pointer 0) (atom false))}
-         {:ok? false :error (date-time-error/->DateTimeError (ffi/read out :pointer 0) (atom false))})
+  (ffi/with-alloc [out @sz-parse-result]
+    (c-parse s (count s) out)
+    (dr/unwrap-result!
+     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+       {:ok? true :value (->DateTime (ffi/read out :pointer 0) (atom false))}
+       {:ok? false :error (date-time-error/->DateTimeError (ffi/read out :pointer 0) (atom false))})
        "DateTime/parse" date-time-error/message)
-      (finally (ffi/free out))))
+  )
 )
 
 (ffi/defcfn ^:private c-from-timestamp "chrono_DateTime_from_timestamp_mv1" [:int64] :pointer)
@@ -60,9 +59,7 @@
 (def ^:private off-date-components-second (delay (c-offsetof-date-components-second)))
 (ffi/defcfn ^:private c-components "jolt_chrono_DateTime_components_mv1" [:pointer :pointer] :void)
 (defn components [self]
-  (let [out (ffi/alloc @sz-date-components-struct)]
-    (try
-      (c-components (dr/ptr! self) out)
-      {:year (ffi/read out :int @off-date-components-year) :month (ffi/read out :uint8 @off-date-components-month) :day (ffi/read out :uint8 @off-date-components-day) :hour (ffi/read out :uint8 @off-date-components-hour) :minute (ffi/read out :uint8 @off-date-components-minute) :second (ffi/read out :uint8 @off-date-components-second)}
-      (finally (ffi/free out)))))
+  (ffi/with-alloc [out @sz-date-components-struct]
+    (c-components (dr/ptr! self) out)
+    {:year (ffi/read out :int @off-date-components-year) :month (ffi/read out :uint8 @off-date-components-month) :day (ffi/read out :uint8 @off-date-components-day) :hour (ffi/read out :uint8 @off-date-components-hour) :minute (ffi/read out :uint8 @off-date-components-minute) :second (ffi/read out :uint8 @off-date-components-second)}))
 

@@ -15,15 +15,14 @@
 (def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
 (def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [text]
-  (let [out (ffi/alloc @sz-parse-result)]
-    (try
-      (c-parse text (count text) out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
-         {:ok? true :value (->JsonValue (ffi/read out :pointer 0) (atom false))}
-         {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) (atom false))})
+  (ffi/with-alloc [out @sz-parse-result]
+    (c-parse text (count text) out)
+    (dr/unwrap-result!
+     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+       {:ok? true :value (->JsonValue (ffi/read out :pointer 0) (atom false))}
+       {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) (atom false))})
        "JsonValue/parse" json-error/message)
-      (finally (ffi/free out))))
+  )
 )
 
 (ffi/defcfn ^:private c-kind "jolt_json_JsonValue_kind_mv1" [:pointer] :int)
@@ -33,20 +32,18 @@
 
 (ffi/defcfn ^:private c-as-bool "jolt_json_JsonValue_as_bool_mv1" [:pointer :pointer :pointer] :void)
 (defn as-bool [self]
-  (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
-    (try
+  (ffi/with-alloc [out-val 8]
+    (ffi/with-alloc [out-is-ok 1]
       (c-as-bool (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :int 0))
-      (finally (ffi/free out-val) (ffi/free out-is-ok))))
+      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :int 0))))
 )
 
 (ffi/defcfn ^:private c-as-f64 "jolt_json_JsonValue_as_f64_mv1" [:pointer :pointer :pointer] :void)
 (defn as-f64 [self]
-  (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
-    (try
+  (ffi/with-alloc [out-val 8]
+    (ffi/with-alloc [out-is-ok 1]
       (c-as-f64 (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :double 0))
-      (finally (ffi/free out-val) (ffi/free out-is-ok))))
+      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :double 0))))
 )
 
 (ffi/defcfn ^:private c-as-str "jolt_json_JsonValue_as_str_mv1" [:pointer :pointer] :int)
@@ -56,11 +53,10 @@
 
 (ffi/defcfn ^:private c-array-len "jolt_json_JsonValue_array_len_mv1" [:pointer :pointer :pointer] :void)
 (defn array-len [self]
-  (let [out-val (ffi/alloc 8) out-is-ok (ffi/alloc 1)]
-    (try
+  (ffi/with-alloc [out-val 8]
+    (ffi/with-alloc [out-is-ok 1]
       (c-array-len (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint64 0))
-      (finally (ffi/free out-val) (ffi/free out-is-ok))))
+      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint64 0))))
 )
 
 (ffi/defcfn ^:private c-array-get "json_JsonValue_array_get_mv1" [:pointer :uint64] :pointer)

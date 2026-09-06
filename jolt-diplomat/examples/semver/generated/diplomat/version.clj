@@ -14,15 +14,14 @@
 (def ^:private sz-parse-result (delay (c-sizeof-parse-result)))
 (def ^:private is-ok-off-parse (delay (c-is-ok-offset-parse)))
 (defn parse [text]
-  (let [out (ffi/alloc @sz-parse-result)]
-    (try
-      (c-parse text (count text) out)
-      (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
-         {:ok? true :value (->Version (ffi/read out :pointer 0) (atom false))}
-         {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) (atom false))})
+  (ffi/with-alloc [out @sz-parse-result]
+    (c-parse text (count text) out)
+    (dr/unwrap-result!
+     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+       {:ok? true :value (->Version (ffi/read out :pointer 0) (atom false))}
+       {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) (atom false))})
        "Version/parse" parse-error/message)
-      (finally (ffi/free out))))
+  )
 )
 
 (ffi/defcfn ^:private c-major "sv_Version_major_mv1" [:pointer] :uint64)

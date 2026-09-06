@@ -27,15 +27,13 @@
 (def ^:private sz-decode-result (delay (c-sizeof-decode-result)))
 (def ^:private is-ok-off-decode (delay (c-is-ok-offset-decode)))
 (defn decode [self input]
-  (let [out (ffi/alloc @sz-decode-result)]
-    (try
-      (let [s (dr/writeable-capture (fn [w__] (c-decode (dr/ptr! self) input (count input) w__ out)))]
-        (dr/unwrap-result!
-         (if (= 1 (ffi/read out :uint8 @is-ok-off-decode))
-           {:ok? true :value s}
-           {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) (atom false))})
-             "Codec/decode" base64-error/message)
-      )
-      (finally (ffi/free out))))
+  (ffi/with-alloc [out @sz-decode-result]
+    (let [s (dr/writeable-capture (fn [w__] (c-decode (dr/ptr! self) input (count input) w__ out)))]
+      (dr/unwrap-result!
+       (if (= 1 (ffi/read out :uint8 @is-ok-off-decode))
+         {:ok? true :value s}
+         {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) (atom false))})
+           "Codec/decode" base64-error/message)
+    ))
 )
 
