@@ -84,6 +84,7 @@ Diplomat's C backend emits several ABI shapes that Jolt's `ffi/defcfn` cannot ex
 jolt-diplomat/
 ├── runtime/          — Jolt library; add as :local/root or :git/url dep
 ├── backend/          — Rust generator (jolt-diplomat-backend)
+├── macros/           — proc-macro attributes (#[jolt_diplomat::blocking], etc.)
 ├── bind.sh           — full pipeline: cargo → diplomat-tool → generator → cc
 └── examples/
     ├── url/          — url crate: nullable prim, struct return, fallible
@@ -94,8 +95,7 @@ jolt-diplomat/
     ├── chrono/       — chrono: struct return with mixed field types
     ├── markdown/     — pulldown-cmark: struct-by-value param, plain scalar returns
     ├── callback/     — impl Fn(...) params: Jolt closures called from Rust
-    ├── sdl3/         — SDL3 window/renderer: a real GUI driven from Jolt
-    └── tunes/        — synth/mixer crate powering the sdl3 example's audio
+    └── sdl3/         — SDL3 window/renderer: bouncing-box GUI with mouse interaction
 ```
 
 ## Usage
@@ -178,18 +178,24 @@ Outputs: `generated/diplomat/*.clj`, `generated/generated_shim.c`, `libmy_capi_s
 
 ### If a method genuinely blocks (I/O, a lock, a sleep)
 
-Add a doc comment line reading exactly `jolt-diplomat: blocking` and re-run `bind.sh` — the generated binding gets `jolt.ffi`'s `:blocking` flag, so the call doesn't pin the garbage collector for every other thread while it waits:
+Add `jolt-diplomat-macros` to your crate and annotate the method — the generated binding gets `jolt.ffi`'s `:blocking` flag, so the call doesn't pin the garbage collector for every other thread while it waits:
+
+```toml
+# my_capi/Cargo.toml
+[dependencies]
+jolt-diplomat-macros = { git = "https://github.com/yourorg/jolt-diplomat" }
+```
 
 ```rust
+use jolt_diplomat::blocking;
+
 impl MyType {
-    /// Writes to disk.
-    ///
-    /// jolt-diplomat: blocking
+    #[jolt_diplomat::blocking]
     pub fn save(&self, path: &str) -> Result<(), Box<MyError>> { ... }
 }
 ```
 
-Skip this for everything else — most methods (parsing, math, data transforms) are fast enough that it isn't worth the runtime's overhead. A `&str`/`String` param works fine on a blocking method (the generator routes it through a foreign-allocated buffer automatically) — see Known limitations below for why that's necessary.
+Skip this for everything else — most methods (parsing, math, data transforms) are fast enough that it isn't worth the overhead. A `&str`/`String` param works fine on a blocking method (the generator routes it through a foreign-allocated buffer automatically) — see Known limitations below for why that's necessary.
 
 ## Running the examples
 
@@ -237,7 +243,7 @@ jolt run -m demo
 ### All examples at once
 
 ```bash
-for demo in url regex semver base64 json chrono markdown callback tunes; do
+for demo in url regex semver base64 json chrono markdown callback; do
   echo "=== $demo ==="
   (cd examples/$demo/jolt-project && jolt run -m demo)
 done
@@ -248,8 +254,6 @@ done
 ```bash
 (cd examples/sdl3/jolt-project && jolt run -m demo)
 ```
-
-`tunes` plays audio through the system's default output device; it fails with `SDL_OpenAudioDevice failed` in headless/CI environments with no audio hardware — that's an environment limitation, not a bug.
 
 ### What each example demonstrates
 
@@ -263,8 +267,7 @@ done
 | `chrono` | [`chrono`](https://crates.io/crates/chrono) | struct return with mixed field types, nullable opaque |
 | `markdown` | [`pulldown-cmark`](https://crates.io/crates/pulldown-cmark) | struct-by-value param with real behavioral effect, plain scalar returns |
 | `callback` | (synthetic `Reducer`) | `impl Fn(...)` params — Jolt closures called back into from Rust |
-| `sdl3` | [`sdl3`](https://crates.io/crates/sdl3) | a real windowed GUI (piano roll) driven entirely from Jolt |
-| `tunes` | (synthetic synth/mixer) | audio rendering; paired with `sdl3` for playback |
+| `sdl3` | [`sdl3`](https://crates.io/crates/sdl3) | windowed GUI with mouse interaction driven entirely from Jolt |
 
 ## Requirements
 
@@ -279,7 +282,7 @@ done
 - `impl Fn(...)` callback params support primitive-in/primitive-out signatures only, invoked synchronously during the call and freed right after — see `examples/callback`. This matches Diplomat's own callback design; it isn't a shape for handing Jolt a long-lived handle into live Rust state (e.g. it can't express something like `egui`'s closure-based, mutably-borrowed UI builder API).
 - Owned slice params (`Box<[T]>`, `Vec<String>`) aren't supported — Diplomat's own C backend doesn't support owned primitive slices either, and this generator doesn't support owned string slices.
 - **An opaque used as a fallible method's error type must implement `message(&self, write: &mut DiplomatWrite)`.** The generator always emits a call to `{error-type}/message` when unwrapping a `Result` whose error is an opaque — it doesn't check whether that method actually exists on the Rust side. An error type missing it compiles and generates fine, then fails the first time that fallible method is actually called (`No such var: ...error/message`), not at generation time. Every error type in `examples/` defines this method; follow that pattern for your own.
-- Marking a method `jolt-diplomat: blocking` (see Usage above) is safe with any param shape, including `&str`/`String` — the generator automatically routes a blocking method's string params through a foreign-allocated buffer instead of a bare `:string` arg, since `jolt.ffi`'s `:blocking` calling convention (Chez's `__collect_safe`) rejects `:string` outright for GC-safety reasons. If you ever see a generation-time panic mentioning `:string argument`, it means some other param shape reached `:blocking` without going through that routing — file it as a bug against this generator.
+- Marking a method `#[jolt_diplomat::blocking]` (see Usage above) is safe with any param shape, including `&str`/`String` — the generator automatically routes a blocking method's string params through a foreign-allocated buffer instead of a bare `:string` arg, since `jolt.ffi`'s `:blocking` calling convention (Chez's `__collect_safe`) rejects `:string` outright for GC-safety reasons. If you ever see a generation-time panic mentioning `:string argument`, it means some other param shape reached `:blocking` without going through that routing — file it as a bug against this generator.
 - Tested against `diplomat-tool`/`diplomat_core` 0.10–0.15; 0.16 changes the HIR shape in ways not yet accounted for.
 
 ## License
