@@ -26,8 +26,8 @@
   (dr/with-opaque [d (doc/parse sample {:tables true :strikethrough true
                                          :footnotes true :tasklists true})]
     (println "heading-count (extended):" (doc/heading-count d))
-    (println "html (extended) contains <table>:" (.contains (String. (doc/to-html d)) "<table>"))
-    (println "html (extended) contains <del>:" (.contains (String. (doc/to-html d)) "<del>")))
+    (println "html (extended):")
+    (println (String. (doc/to-html d))))
 
   ;; empty doc — edge case
   (dr/with-opaque [d (doc/parse "" {:tables false :strikethrough false
