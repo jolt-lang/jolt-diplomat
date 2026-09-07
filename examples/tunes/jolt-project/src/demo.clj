@@ -27,19 +27,16 @@
     (doseq [pitch [60 64 67]]
       (tunes/add-note mixer (midi->hz pitch) chord-t (* 2 SEC-PER-BEAT) :sine))))
 
-;; render-into writes into a native buffer — use raw FFI to read it back
+;; render-into writes into a native buffer; use read-array to pull floats back
 (ffi/defcfn ^:private c-render-into
   "jolt_tunes_TunesMixer_render_into_mv1"
   [:pointer :pointer :size_t :float] :void)
 
 (defn render-offline [mixer sample-rate]
-  (let [n (tunes/render-buffer-size mixer sample-rate)
-        ptr (ffi/alloc (* n 4))]  ; 4 bytes per f32
-    (try
-      (c-render-into (:ptr mixer) ptr n sample-rate)
-      (vec (for [i (range n)]
-             (ffi/read ptr :float (* i 4))))
-      (finally (ffi/free ptr)))))
+  (let [n (tunes/render-buffer-size mixer sample-rate)]
+    (ffi/with-alloc [ptr (* n 4)]  ; 4 bytes per f32
+      (c-render-into (dr/ptr! mixer) ptr n sample-rate)
+      (ffi/read-array ptr :float n))))
 
 (defn play-buffer [aud samples]
   (let [chunk 2048

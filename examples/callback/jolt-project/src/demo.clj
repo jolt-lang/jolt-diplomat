@@ -1,6 +1,5 @@
 (ns demo)
 
-(require '[jolt.ffi :as ffi])
 (require '[jolt.host :as host])
 (require '[diplomat.runtime :as dr])
 
