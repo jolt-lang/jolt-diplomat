@@ -592,12 +592,10 @@ fn classify_return(
 // comparison, named_constructor, getter, setter, custom_extra_code,
 // indexer, error, default_value — verified against diplomat_core's
 // attrs.rs; there is no generic custom-metadata slot), so this can't be
-// a real Diplomat attribute. Every method's doc comment IS something
-// Diplomat already parses and hands to every backend (hir::Method.docs),
-// so an explicit marker line there is the closest available thing to an
-// attribute: opt-in, unambiguous, and not a guess from the function's
-// name. A method whose Rust doc comment contains a line reading exactly
-// `jolt-diplomat: blocking` gets :blocking on its generated defcfn.
+// a real Diplomat attribute. Instead, `jolt-diplomat-macros` provides
+// `#[jolt_diplomat::blocking]`, a proc-macro that prepends the doc line
+// `jolt-diplomat: blocking` to the item — so it reads like an attribute
+// at the callsite and still lands in hir::Method.docs for detection here.
 fn is_blocking(m: &hir::Method) -> bool {
     if m.docs.is_empty() {
         return false;
@@ -1467,13 +1465,8 @@ mod tests {
         );
     }
 
-    // Diplomat's #[diplomat::attr(...)] vocabulary is closed (verified
-    // against diplomat_core's attrs.rs — no generic custom-metadata
-    // slot), so a marker line in the method's doc comment is the closest
-    // available thing to an attribute for telling the generator a method
-    // blocks (I/O, a lock, a sleep) and needs jolt.ffi's :blocking flag —
-    // without it, a thread parked in that foreign call pins the GC for
-    // every other thread, not just the calling one.
+    // Use #[jolt_diplomat::blocking] (from jolt-diplomat-macros) at the
+    // callsite — it's a proc-macro that prepends the doc line detected here.
     #[test]
     fn doc_marker_line_is_detected_as_blocking() {
         let tcx = lower(r#"
