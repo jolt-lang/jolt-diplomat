@@ -125,7 +125,7 @@
          ~buf-sym (ffi/alloc (max (* n# w#) 1))]
      (try
        (dotimes [i# n#]
-         (ffi/write ~buf-sym ~elem-type (* i# w#) (nth items# i#)))
+         (ffi/write ~buf-sym ~elem-type (nth items# i#) (* i# w#)))
        ~@body
        (finally (ffi/free ~buf-sym)))))
 
