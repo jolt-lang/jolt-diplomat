@@ -11,11 +11,13 @@
 (def FPS 60)
 (def FRAME-MS (/ 1000 FPS))
 
-(def EVT-NONE  0)
-(def EVT-QUIT  1)
-(def EVT-KEYDN 2)
-(def KC-ESC    27)
-(def KC-SPACE  32)
+(def EVT-NONE    0)
+(def EVT-QUIT    1)
+(def EVT-KEYDN   2)
+(def EVT-MOUSDN  5)
+(def KC-ESC      27)
+(def KC-SPACE    32)
+(def KICK-SPEED  8.0)
 
 ;; ── box state ──────────────────────────────────────────────────────────────
 
@@ -44,6 +46,16 @@
         nx  (max 0 (min nx (- W w)))
         ny  (max 0 (min ny (- H h)))]
     (assoc box :x nx :y ny :vx nvx :vy nvy)))
+
+(defn kick-box [{:keys [x y w h] :as box} mx my]
+  (let [cx  (+ x (/ w 2))
+        cy  (+ y (/ h 2))
+        dx  (- cx mx)
+        dy  (- cy my)
+        len (Math/sqrt (+ (* dx dx) (* dy dy)))
+        len (if (< len 0.01) 1.0 len)]
+    (assoc box :vx (* KICK-SPEED (/ dx len))
+               :vy (* KICK-SPEED (/ dy len)))))
 
 ;; ── render ─────────────────────────────────────────────────────────────────
 
@@ -84,14 +96,17 @@
     (let [font "/System/Library/Fonts/SFNSMono.ttf"]
       (try (app/load-font a font 14) (catch Exception _)))
     (loop [boxes BOXES paused? false]
-      (let [evt    (app/poll-event a)
-            kind   (:kind evt)
-            kc     (:key-code evt)
-            quit?  (or (= kind EVT-QUIT)
-                       (and (= kind EVT-KEYDN) (= kc KC-ESC)))
+      (let [evt     (app/poll-event a)
+            kind    (:kind evt)
+            kc      (:key-code evt)
+            quit?   (or (= kind EVT-QUIT)
+                        (and (= kind EVT-KEYDN) (= kc KC-ESC)))
             paused? (if (and (= kind EVT-KEYDN) (= kc KC-SPACE))
                       (not paused?)
-                      paused?)]
+                      paused?)
+            boxes   (if (= kind EVT-MOUSDN)
+                      (mapv #(kick-box % (:mouse-x evt) (:mouse-y evt)) boxes)
+                      boxes)]
         (when-not quit?
           (let [next-boxes (if paused? boxes (mapv step-box boxes))]
             (render a next-boxes paused?)
