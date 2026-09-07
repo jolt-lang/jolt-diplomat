@@ -2,7 +2,7 @@
 
 Call Rust libraries from [Jolt](https://jolt-lang.net) using [Diplomat](https://diplomatoptic.com) as the FFI bridge.
 
-One script (`bind.sh`) takes any Diplomat-annotated Rust crate and produces ready-to-use Jolt bindings. A small hand-written runtime library handles the lifetime and marshaling conventions that Diplomat's C ABI requires.
+One script (`bind.clj`) takes any Diplomat-annotated Rust crate and produces ready-to-use Jolt bindings. A small hand-written runtime library handles the lifetime and marshaling conventions that Diplomat's C ABI requires.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ flowchart TD
         RS["src/lib.rs\n#[diplomat::bridge]"]
     end
 
-    subgraph BIND_SH["bind.sh  (one-time per crate)"]
+    subgraph BIND_SH["bind.clj  (one-time per crate)"]
         direction TB
         S1["① cargo build\n→ libfoo.dylib"]
         S2["② diplomat-tool c\n→ C headers"]
@@ -85,7 +85,7 @@ jolt-diplomat/
 ├── runtime/          — Jolt library; add as :local/root or :git/url dep
 ├── backend/          — Rust generator (jolt-diplomat-backend)
 ├── macros/           — proc-macro attributes (#[jolt_diplomat::blocking], etc.)
-├── bind.sh           — full pipeline: cargo → diplomat-tool → generator → cc
+├── bind.clj          — full pipeline: cargo → diplomat-tool → generator → cc
 └── examples/
     ├── url/          — url crate: nullable prim, struct return, fallible
     ├── regex/        — regex crate: nullable write, opaque error
@@ -148,10 +148,10 @@ mod ffi {
 }
 ```
 
-### 2. Run bind.sh
+### 2. Run bind.clj
 
 ```bash
-bash bind.sh path/to/my_capi --release
+./bind.clj path/to/my_capi --release
 ```
 
 Outputs: `generated/diplomat/*.clj`, `generated/generated_shim.c`, `libmy_capi_shim.dylib`.
@@ -235,7 +235,7 @@ To rebuild from source (e.g. after modifying the Rust crate):
 
 ```bash
 cd examples/chrono
-bash build.sh          # runs the full pipeline: cargo → diplomat-tool → generator → cc
+../../bind.clj chrono_capi   # runs the full pipeline: cargo → diplomat-tool → generator → cc
 cd jolt-project
 jolt run -m demo
 ```
