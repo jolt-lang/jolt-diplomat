@@ -211,10 +211,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install diplomat-tool --version "^0.15"
 ```
 
-**Jolt** v0.8.1+  
+**Jolt** v0.8.4+  
 Follow the [Jolt install guide](https://jolt-lang.net/docs/install.html). Verify with:
 ```bash
-jolt --version   # should print v0.8.1 or later
+jolt --version   # should print v0.8.4 or later
 ```
 
 **C compiler** — on macOS install Xcode Command Line Tools if not already present:
@@ -273,7 +273,7 @@ done
 
 - Rust + Cargo
 - `diplomat-tool` 0.14–0.15 (`cargo install diplomat-tool --version "^0.15"`)
-- [Jolt](https://jolt-lang.net) v0.8.1+
+- [Jolt](https://jolt-lang.net) v0.8.4+
 - `cc` (Xcode CLT on macOS)
 
 ## Known limitations
