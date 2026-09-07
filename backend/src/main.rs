@@ -1671,5 +1671,6 @@ mod tests {
             "plain has no marker and must NOT carry :&, got:\n{plain_section}"
         );
     }
+
 }
 
