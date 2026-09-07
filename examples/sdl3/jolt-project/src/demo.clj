@@ -50,22 +50,22 @@
 (defn draw-grid [a]
   (app/set-draw-color a 40 40 40 255)
   (doseq [x (range 0 W 50)]
-    (app/draw-line a x 0 x H))
+    (app/draw-line a (float x) 0.0 (float x) (float H)))
   (doseq [y (range 0 H 50)]
-    (app/draw-line a 0 y W y)))
+    (app/draw-line a 0.0 (float y) (float W) (float y))))
 
 (defn draw-boxes [a boxes paused?]
   (doseq [{:keys [x y w h color]} boxes]
     (let [[r g b] color]
       (app/set-draw-color a r g b 200)
-      (app/fill-rect a x y w h)
+      (app/fill-rect a (float x) (float y) (float w) (float h))
       ;; bright border
       (app/set-draw-color a
                           (min 255 (+ r 60))
                           (min 255 (+ g 60))
                           (min 255 (+ b 60))
                           255)
-      (app/draw-rect a x y w h)))
+      (app/draw-rect a (float x) (float y) (float w) (float h))))
   (when paused?
     (app/set-draw-color a 255 255 255 255)
     (app/draw-text a "PAUSED — press SPACE" 10 10 255 255 255 200)))
