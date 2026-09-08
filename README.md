@@ -95,7 +95,8 @@ jolt-diplomat/
     ├── chrono/       — chrono: struct return with mixed field types
     ├── markdown/     — pulldown-cmark: struct-by-value param, plain scalar returns
     ├── callback/     — impl Fn(...) params: Jolt closures called from Rust
-    └── sdl3/         — SDL3 window/renderer: bouncing-box GUI with mouse interaction
+    ├── sdl3/         — SDL3 window/renderer: bouncing-box GUI with mouse interaction
+    └── tantivy/      — tantivy full-text search: blocking commit, opaque chain, ResultSet accessors
 ```
 
 ## Usage
@@ -243,7 +244,7 @@ jolt run -m demo
 ### All examples at once
 
 ```bash
-for demo in url regex semver base64 json chrono markdown callback; do
+for demo in url regex semver base64 json chrono markdown callback tantivy; do
   echo "=== $demo ==="
   (cd examples/$demo/jolt-project && jolt run -m demo)
 done
@@ -268,6 +269,7 @@ done
 | `markdown` | [`pulldown-cmark`](https://crates.io/crates/pulldown-cmark) | struct-by-value param with real behavioral effect, plain scalar returns |
 | `callback` | (synthetic `Reducer`) | `impl Fn(...)` params — Jolt closures called back into from Rust |
 | `sdl3` | [`sdl3`](https://crates.io/crates/sdl3) | windowed GUI with mouse interaction driven entirely from Jolt |
+| `tantivy` | [`tantivy`](https://crates.io/crates/tantivy) | blocking commit, opaque `SearchIndex→ResultSet` chain, per-hit accessor pattern |
 
 ## Requirements
 
