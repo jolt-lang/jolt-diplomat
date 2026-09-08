@@ -7,7 +7,11 @@ edition = "2021"
 name = "chrono_capi"
 crate-type = ["cdylib"]
 
+[features]
+mem-trace = ["dep:stats_alloc"]
+
 [dependencies]
 chrono = "0.4"
 diplomat = { version = ">=0.14,<0.16" }
 diplomat-runtime = { version = ">=0.14,<0.16" }
+stats_alloc = { version = "0.1", optional = true }

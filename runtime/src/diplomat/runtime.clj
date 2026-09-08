@@ -290,25 +290,32 @@
 ;; other side effects, so a retry from scratch is always sound. Capped at
 ;; max-buffer-size so a malformed/adversarial input can't turn a string
 ;; return into unbounded allocation.
+;; `recur` cannot cross a `try` boundary (analyze/invalid-recur), so the grow
+;; case can't just recur from inside the try that catches cleanup. Instead
+;; the try produces a plain value — ::grow or [::done result] — and the
+;; recur/throw happens in the loop body, outside the try.
 (defn- capture-loop [f label read-fn]
   (loop [size initial-buffer-size]
     (let [buf (ffi/alloc size)
-          w   (ffi/alloc writeable-struct-size)]
-      (try
-        (c-simple-write buf size w) ;; NOT hand-assembled — see writeable-capture's docstring
-        (let [f-result (f w)]
-          (if (writeable-grow-failed? w)
-            (do (ffi/free buf) (ffi/free w)
-                (if (>= size max-buffer-size)
-                  (throw (ex-info (str label ": output exceeds max buffer size")
-                                   {:diplomat/buffer-size size}))
-                  (recur (* size 2))))
-            (let [result (read-fn f-result buf w)]
-              (ffi/free buf) (ffi/free w)
-              result)))
-        (catch Throwable t
+          w   (ffi/alloc writeable-struct-size)
+          outcome (try
+                    (c-simple-write buf size w) ;; NOT hand-assembled — see writeable-capture's docstring
+                    (let [f-result (f w)]
+                      (if (writeable-grow-failed? w)
+                        ::grow
+                        [::done (read-fn f-result buf w)]))
+                    (catch Throwable t
+                      (ffi/free buf) (ffi/free w)
+                      (throw t)))]
+      (if (= outcome ::grow)
+        (do (ffi/free buf) (ffi/free w)
+            (if (>= size max-buffer-size)
+              (throw (ex-info (str label ": output exceeds max buffer size")
+                               {:diplomat/buffer-size size}))
+              (recur (* size 2))))
+        (let [[_ result] outcome]
           (ffi/free buf) (ffi/free w)
-          (throw t))))))
+          result)))))
 
 (defn writeable-capture
   "Calls f with a fresh DiplomatWrite pointer as its writeable-out

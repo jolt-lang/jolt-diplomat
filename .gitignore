@@ -1,7 +1,9 @@
 .DS_Store
 target/
+target-traced/
 *.dylib
 *.so
+jolt_output.log
 .jolt/
 .cpcache/
 
