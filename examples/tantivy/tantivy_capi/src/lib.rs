@@ -56,14 +56,10 @@ mod ffi {
             self.0.doc_count()
         }
 
-        pub fn search(
-            &self,
-            query: &str,
-            limit: u32,
-        ) -> Result<Box<ResultSet>, Box<TantivyError>> {
-            self.0.search(query, limit as usize)
-                .map(Box::new)
-                .map_err(|e| Box::new(TantivyError(e.to_string())))
+        /// Returns an empty ResultSet on query parse error rather than failing.
+        pub fn search(&self, query: &str, limit: u32) -> Box<ResultSet> {
+            let hits = self.0.search(query, limit as usize).unwrap_or_default();
+            Box::new(ResultSet(hits))
         }
     }
 
@@ -190,7 +186,7 @@ impl Inner {
         self.reader.searcher().num_docs()
     }
 
-    pub(crate) fn search(&self, query_str: &str, limit: usize) -> tantivy::Result<ffi::ResultSet> {
+    pub(crate) fn search(&self, query_str: &str, limit: usize) -> tantivy::Result<Vec<Hit>> {
         let searcher = self.reader.searcher();
         let mut parser = QueryParser::for_index(
             &self.index,
@@ -220,7 +216,7 @@ impl Inner {
             let snippet = snippet_gen.snippet_from_doc(&doc).fragment().to_string();
             hits.push(Hit { score, title, description, category, price_cents, snippet });
         }
-        Ok(ffi::ResultSet(hits))
+        Ok(hits)
     }
 }
 
@@ -248,27 +244,26 @@ mod tests {
     #[test]
     fn search_headphones_top_result_is_headphones() {
         let idx = seed_index();
-        let rs = idx.search("headphones", 5).unwrap();
-        assert!(rs.0.len() > 0, "expected results for 'headphones'");
-        let top = &rs.0[0];
+        let hits = idx.search("headphones", 5).unwrap();
+        assert!(!hits.is_empty(), "expected results for 'headphones'");
         assert!(
-            top.title.to_lowercase().contains("headphone"),
-            "top result should be a headphones product, got: {}", top.title
+            hits[0].title.to_lowercase().contains("headphone"),
+            "top result should be a headphones product, got: {}", hits[0].title
         );
     }
 
     #[test]
     fn search_empty_query_returns_no_results() {
         let idx = seed_index();
-        let rs = idx.search("", 5).unwrap();
-        assert_eq!(rs.0.len(), 0, "empty query should return 0 results");
+        let hits = idx.search("", 5).unwrap();
+        assert_eq!(hits.len(), 0, "empty query should return 0 results");
     }
 
     #[test]
     fn search_limit_is_respected() {
         let idx = seed_index();
-        let rs = idx.search("wireless", 1).unwrap();
-        assert!(rs.0.len() <= 1, "limit=1 must return at most 1 result");
+        let hits = idx.search("wireless", 1).unwrap();
+        assert!(hits.len() <= 1, "limit=1 must return at most 1 result");
     }
 
     #[test]
@@ -276,19 +271,16 @@ mod tests {
         let idx = Inner::new_in_ram();
         idx.add_product("Cheap Widget", "An affordable widget for everyday use", "Widgets", 4999).unwrap();
         idx.commit().unwrap();
-        let rs = idx.search("affordable widget", 1).unwrap();
-        assert_eq!(rs.0.len(), 1);
-        assert_eq!(rs.0[0].price_cents, 4999);
+        let hits = idx.search("affordable widget", 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].price_cents, 4999);
     }
 
     #[test]
     fn out_of_bounds_accessor_does_not_panic() {
         let idx = seed_index();
-        let rs = idx.search("headphones", 2).unwrap();
-        // Access way beyond the result count — must not panic, just return defaults
-        let _ = rs.0.get(999);
-        // And via the ffi layer
-        let ffi_rs = super::ffi::ResultSet(rs.0);
+        let hits = idx.search("headphones", 2).unwrap();
+        let ffi_rs = super::ffi::ResultSet(hits);
         assert_eq!(ffi_rs.get_score(999), 0.0);
         assert_eq!(ffi_rs.get_price_cents(999), 0);
     }

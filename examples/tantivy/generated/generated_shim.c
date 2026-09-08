@@ -47,6 +47,10 @@ void jolt_tantivy_SearchIndex_commit_mv1(const SearchIndex* self, void* out) {
 
 size_t jolt_sizeof_tantivy_SearchIndex_commit_mv1_result(void) { return sizeof(tantivy_SearchIndex_commit_mv1_result); }
 size_t jolt_offsetof_tantivy_SearchIndex_commit_mv1_result_is_ok(void) { return offsetof(tantivy_SearchIndex_commit_mv1_result, is_ok); }
+void* jolt_tantivy_SearchIndex_search_mv1(const SearchIndex* self, const char* query_data, size_t query_len, uint32_t limit) {
+    return tantivy_SearchIndex_search_mv1(self, (DiplomatStringView){ .data = query_data, .len = query_len }, limit);
+}
+
 void jolt_tantivy_TantivyError_message_mv1(const TantivyError* self, DiplomatWrite* write) {
     tantivy_TantivyError_message_mv1(self, write);
 }

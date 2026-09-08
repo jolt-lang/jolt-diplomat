@@ -30,8 +30,7 @@ tantivy_SearchIndex_commit_mv1_result tantivy_SearchIndex_commit_mv1(const Searc
 
 uint64_t tantivy_SearchIndex_doc_count_mv1(const SearchIndex* self);
 
-typedef struct tantivy_SearchIndex_search_mv1_result {union {ResultSet* ok; TantivyError* err;}; bool is_ok;} tantivy_SearchIndex_search_mv1_result;
-tantivy_SearchIndex_search_mv1_result tantivy_SearchIndex_search_mv1(const SearchIndex* self, DiplomatStringView query, uint32_t limit);
+ResultSet* tantivy_SearchIndex_search_mv1(const SearchIndex* self, DiplomatStringView query, uint32_t limit);
 
 void tantivy_SearchIndex_destroy_mv1(SearchIndex* self);
 

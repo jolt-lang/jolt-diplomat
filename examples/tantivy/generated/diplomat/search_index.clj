@@ -3,6 +3,7 @@
   Do not hand-edit — see backend/src/main.rs for the generator, README.md for how this fits together."
   (:require [jolt.ffi :as ffi]
             [diplomat.runtime :as dr]
+            [diplomat.result-set :as result-set]
             [diplomat.tantivy-error :as tantivy-error]
   ))
 
@@ -61,4 +62,9 @@
 
 (ffi/defcfn ^:private c-doc-count "tantivy_SearchIndex_doc_count_mv1" [:pointer] :uint64)
 (defn doc-count [self] (c-doc-count (dr/ptr! self)))
+
+(ffi/defcfn ^:private c-search "jolt_tantivy_SearchIndex_search_mv1" [:pointer :string :size_t :uint] :pointer)
+(defn search [self query limit]
+  (result-set/->ResultSet (c-search (dr/ptr! self) query (count query) limit) (atom false))
+)
 
