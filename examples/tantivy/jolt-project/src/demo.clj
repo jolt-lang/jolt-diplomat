@@ -58,6 +58,36 @@
   (let [results (idx/search index query limit)]
     (print-results results)))
 
+(defn assert-pass [label ok?]
+  (println (str (if ok? "  PASS" "  FAIL") " " label))
+  (when-not ok? (System/exit 1)))
+
+(defn smoke-test [index]
+  (println "\n── Smoke tests ──────────────────────────────────────────")
+  (assert-pass "doc-count = 20"
+    (= 20 (idx/doc-count index)))
+  (let [r (idx/search index "wireless headphones" 5)]
+    (assert-pass "wireless headphones returns results"
+      (pos? (rs/count r)))
+    (assert-pass "top wireless headphones result is headphone/wireless product"
+      (let [t (.toLowerCase (String. (rs/get-title r 0)))
+            d (.toLowerCase (String. (rs/get-description r 0)))]
+        (or (.contains t "headphone") (.contains t "wireless")
+            (.contains d "headphone") (.contains d "wireless")))))
+  (let [r (idx/search index "coffee" 5)]
+    (assert-pass "coffee returns results"
+      (pos? (rs/count r))))
+  (let [r (idx/search index "bluetooth speaker" 3)]
+    (assert-pass "bluetooth speaker top result is a speaker"
+      (.contains (.toLowerCase (String. (rs/get-title r 0))) "speaker")))
+  (let [r (idx/search index "" 5)]
+    (assert-pass "empty query returns 0 results"
+      (zero? (rs/count r))))
+  (let [r (idx/search index "headphones" 1)]
+    (assert-pass "limit=1 returns exactly 1 result"
+      (= 1 (rs/count r))))
+  (println "\nAll smoke tests passed."))
+
 (defn -main [& args]
   (println "=== tantivy product search via Diplomat + Jolt ===")
   (println (str "Indexing " (count PRODUCTS) " products..."))
@@ -70,20 +100,19 @@
               (idx/doc-count index)
               (- (System/currentTimeMillis) start)))
 
-    ;; canned queries
-    (println "── Canned queries ───────────────────────────────────────")
-    (run-query index "wireless headphones"    5)
-    (run-query index "coffee"                 5)
-    (run-query index "portable waterproof"    5)
-    (run-query index "bluetooth speaker"      3)
-
-    ;; interactive loop (skip in --test mode)
-    (when-not (some #{"--test"} args)
-      (println "\n── Interactive search (empty line to quit) ──────────────")
-      (loop []
-        (print "\nSearch: ")
-        (flush)
-        (let [q (read-line)]
-          (when (and q (seq q))
-            (run-query index q 5)
-            (recur)))))))
+    (if (some #{"--test"} args)
+      (smoke-test index)
+      (do
+        (println "── Canned queries ───────────────────────────────────────")
+        (run-query index "wireless headphones"    5)
+        (run-query index "coffee"                 5)
+        (run-query index "portable waterproof"    5)
+        (run-query index "bluetooth speaker"      3)
+        (println "\n── Interactive search (empty line to quit) ──────────────")
+        (loop []
+          (print "\nSearch: ")
+          (flush)
+          (let [q (read-line)]
+            (when (and q (seq q))
+              (run-query index q 5)
+              (recur))))))))
