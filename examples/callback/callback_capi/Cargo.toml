@@ -7,6 +7,10 @@ edition = "2021"
 name = "callback_capi"
 crate-type = ["cdylib"]
 
+[features]
+mem-trace = ["dep:stats_alloc"]
+
 [dependencies]
 diplomat = ">=0.10,<0.16"
 diplomat-runtime = ">=0.10,<0.16"
+stats_alloc = { version = "0.1", optional = true }
