@@ -7,8 +7,12 @@ edition = "2021"
 name = "sdl3_capi"
 crate-type = ["cdylib"]
 
+[features]
+mem-trace = ["dep:stats_alloc"]
+
 [dependencies]
 sdl3 = { version = "0.18", features = [] }
 diplomat = { version = ">=0.14,<0.16" }
 diplomat-runtime = { version = ">=0.14,<0.16" }
 sdl3-ttf-sys = "0.6.1"
+stats_alloc = { version = "0.1", optional = true }
