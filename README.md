@@ -88,15 +88,25 @@ jolt-diplomat/
 ├── bind.clj          — full pipeline: cargo → diplomat-tool → generator → cc
 └── examples/
     ├── url/          — url crate: nullable prim, struct return, fallible
+    │   └── leak-check/   — AllocStats-based leak check (see Memory-leak checking below)
     ├── regex/        — regex crate: nullable write, opaque error
+    │   └── leak-check/
     ├── semver/       — semver crate: cross-opaque method params
+    │   └── leak-check/
     ├── base64/       — base64 + hex: &[u8] slice params
+    │   └── leak-check/
     ├── json/         — serde_json: nullable opaque, enum return
+    │   └── leak-check/
     ├── chrono/       — chrono: struct return with mixed field types
+    │   └── leak-check/
     ├── markdown/     — pulldown-cmark: struct-by-value param, plain scalar returns
+    │   └── leak-check/
     ├── callback/     — impl Fn(...) params: Jolt closures called from Rust
+    │   └── leak-check/
     ├── sdl3/         — SDL3 window/renderer: bouncing-box GUI with mouse interaction
+    │   └── leak-check/
     └── tantivy/      — tantivy full-text search: blocking commit, opaque chain, ResultSet accessors
+        └── leak-check/
 ```
 
 ## Usage
@@ -270,6 +280,88 @@ done
 | `callback` | (synthetic `Reducer`) | `impl Fn(...)` params — Jolt closures called back into from Rust |
 | `sdl3` | [`sdl3`](https://crates.io/crates/sdl3) | windowed GUI with mouse interaction driven entirely from Jolt |
 | `tantivy` | [`tantivy`](https://crates.io/crates/tantivy) | blocking commit, opaque `SearchIndex→ResultSet` chain, per-hit accessor pattern |
+
+## Memory-leak checking
+
+Every example under `examples/` ships a `leak-check/` subproject that exercises the crate's bound API at volume and reports whether every byte the crate allocates gets deallocated — an exact yes/no answer per run, not an inferred one.
+
+### Why not just watch process memory?
+
+The first version of this tooling sampled process RSS (`ps -o rss=`) and Chez's own `(current-memory-bytes)` before and after a loop. Two problems killed that approach:
+
+- **Chez's GC-heap stats never see Rust-side allocations.** An undestroyed `Box<Codec>` from a forgotten `close!` lives in native/malloc memory Chez's collector doesn't track at all — `current-memory-bytes` stayed perfectly flat across a run that was leaking hundreds of KB.
+- **RSS does see it, but noisily.** RSS growth is a real signal for a native leak, but distinguishing "20MB of steady leak" from "20MB of one-time startup/JIT noise" needs threshold-tuning, warm-up windows, and multiple samples — and the right threshold for a small `Codec` struct (base64) turned out ten times too coarse for `JsonValue`'s smaller per-leak footprint (json), so it wasn't even a threshold you could set once and reuse.
+
+### The actual solution: `stats_alloc`
+
+Each example's `*_capi` crate gets a `mem-trace` Cargo feature. Behind that feature, `stats_alloc` replaces the crate's global allocator, and an `AllocStats` opaque exposes two counters back to Jolt:
+
+```rust
+#[cfg(feature = "mem-trace")]
+#[global_allocator]
+static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+#[cfg(feature = "mem-trace")]
+#[diplomat::opaque]
+pub struct AllocStats;
+
+#[cfg(feature = "mem-trace")]
+impl AllocStats {
+    pub fn bytes_allocated() -> u64 { super::GLOBAL.stats().bytes_allocated as u64 }
+    pub fn bytes_deallocated() -> u64 { super::GLOBAL.stats().bytes_deallocated as u64 }
+}
+```
+
+(`AllocStats` is an opaque with static methods, not a bare function, because this repo's jolt-diplomat backend doesn't lower Diplomat free functions yet.)
+
+A leak-check script does a warm-up, snapshots `bytes_allocated - bytes_deallocated`, runs N iterations of the real API, and snapshots again. Any nonzero delta is bytes that were allocated and never freed — exact, deterministic, no averaging, no noise floor:
+
+```clojure
+(defn live-bytes [] (- (as/bytes-allocated) (as/bytes-deallocated)))
+;; ... warm up, snapshot baseline, run N iterations, snapshot again ...
+;; leaked = after - baseline
+```
+
+### Why two builds instead of one
+
+`diplomat-tool` and this repo's Jolt-side generator both parse `src/lib.rs` **textually** — neither runs cargo's feature/`cfg` resolution. That means a `#[cfg(feature = "mem-trace")]`-gated `AllocStats` is always visible to codegen, regardless of which Cargo features the `.dylib` was actually compiled with. Generating bindings once against a default (non-traced) build would silently produce Clojure code that calls a symbol the dylib doesn't export.
+
+So `bind.clj` gained two flags to keep the two builds fully separate:
+
+```bash
+# consumable build: generated/, target/, no AllocStats surface at all
+./bind.clj my_capi --release
+
+# traced build: generated-traced/, target-traced/ (own CARGO_TARGET_DIR), AllocStats present
+./bind.clj my_capi --release --features mem-trace --out-suffix -traced
+```
+
+`--out-suffix` isolates *everything* per build — `c-headers<suffix>/`, `generated<suffix>/`, the shim dylib name, and (critically) `CARGO_TARGET_DIR`, so the traced and untraced `.dylib`s coexist on disk instead of one build overwriting the other's artifact at the same path.
+
+The result: real consumers get a cdylib with zero tracing overhead and no `AllocStats` symbol at all; `leak-check/` loads the traced build directly via `jolt.ffi/load-library` (not the `dr/load!` macro, which assumes the untraced path layout).
+
+### Running a leak check
+
+```bash
+cd examples/chrono/leak-check
+jolt run -m leak-check       # exercises the real API; expect "leaked: 0 bytes"
+jolt run -m leak-check-neg   # deliberately skips close! on an opaque; expect a nonzero, deterministic leak
+```
+
+Every example's `leak-check/` has both files: `leak_check.clj` proves the crate's real usage pattern doesn't leak, and `leak_check_neg.clj` proves the check isn't just silent — it deliberately breaks `with-opaque`/`when-opaque` discipline (the specific mistake shape that crate's opaque graph actually invites — a flat forgotten `close!` for a single-opaque crate like `base64`/`chrono`, a forgotten nested owned-opaque for `json`'s `array_get`-shaped return, a leaked borrowed-looking-but-actually-owned argument for `semver`'s two-opaque `matches` call, and so on) and confirms a real, nonzero, repeatable byte count comes back.
+
+### Where the pattern had to bend
+
+Most examples wrap a pure data-transform crate (a single opaque, cheap to construct, no real OS resources), so the same 500-round-warmup / 20000-iteration shape works everywhere. Two examples didn't fit that mold:
+
+- **`tantivy`** — building a `SearchIndex` is expensive (a real `tantivy::Index`/`IndexWriter`/`IndexReader`, a `Mutex`, a 50MB writer buffer). `leak_check.clj` builds *one* index up front and loops the actual leak risk — `search()`'s owned `ResultSet` return and its accessors — 20000 times against it, rather than rebuilding the index every iteration.
+- **`sdl3`** — `SdlApp::create` opens a real OS window and `AudioStream::open` grabs the real default audio device on every call, not a cheap in-process value. Its `leak-check/` uses 30 iterations instead of 20000, run once and meant to be observed directly (brief window flashing is expected), and its negative control can only leak a *single* instance — `sdl3::EventPump` is a process-wide singleton the crate itself enforces, so a second unclosed `create` throws instead of accumulating. That failure became a second, independent confirmation of the leak alongside the byte count.
+- **`callback`** — has no opaque that needs closing at all (`Reducer::reduce`/`apply_twice` run their closure inline and return nothing owned). The real leak risk lives in Diplomat's callback marshaling: a boxed `impl Fn` trait object on the Rust side (which `AllocStats` **can** see), and a Chez-side `jolt.ffi/foreign-callable` trampoline pair on the Jolt side (which it **cannot** — that's Chez-owned foreign memory, and `jolt.ffi` exposes no live-callable counter). `callback_capi` has a `apply_twice_leaky` method that exists solely as a test fixture (`Box::leak`s the closure) so the negative control has something real to detect; the Chez-side half of this crate's leak risk remains unverified by any tool in this repo.
+
+### Known gaps
+
+- **`callback`'s Chez-side trampoline leak is undetectable** with current tooling — no `jolt.ffi` introspection exists for live foreign-callables.
+- **`sdl3`'s `SdlApp` has no `Drop` impl**, so a loaded TTF font (and the `TTF_Init` call) is never released. `leak_check.clj` deliberately avoids `load_font` so the check measures what's currently correct rather than a known-broken path.
 
 ## Requirements
 
