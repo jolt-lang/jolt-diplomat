@@ -72,3 +72,45 @@
   (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 
+(ffi/defcfn ^:private c-new-object "json_JsonValue_new_object_mv1" [] :pointer)
+(defn new-object [] (->JsonValue (c-new-object ) (atom false)))
+
+(ffi/defcfn ^:private c-new-array "json_JsonValue_new_array_mv1" [] :pointer)
+(defn new-array [] (->JsonValue (c-new-array ) (atom false)))
+
+(ffi/defcfn ^:private c-new-string "jolt_json_JsonValue_new_string_mv1" [:string :size_t] :pointer)
+(defn new-string [value]
+  (->JsonValue (c-new-string value (count value)) (atom false))
+)
+
+(ffi/defcfn ^:private c-new-number "json_JsonValue_new_number_mv1" [:double] :pointer)
+(defn new-number [value] (->JsonValue (c-new-number value) (atom false)))
+
+(ffi/defcfn ^:private c-new-bool "json_JsonValue_new_bool_mv1" [:int] :pointer)
+(defn new-bool [value] (->JsonValue (c-new-bool value) (atom false)))
+
+(ffi/defcfn ^:private c-set-string "jolt_json_JsonValue_set_string_mv1" [:pointer :string :size_t :string :size_t] :int)
+(defn set-string [self key value]
+  (c-set-string (dr/ptr! self) key (count key) value (count value))
+)
+
+(ffi/defcfn ^:private c-set-number "jolt_json_JsonValue_set_number_mv1" [:pointer :string :size_t :double] :int)
+(defn set-number [self key value]
+  (c-set-number (dr/ptr! self) key (count key) value)
+)
+
+(ffi/defcfn ^:private c-set-bool "jolt_json_JsonValue_set_bool_mv1" [:pointer :string :size_t :int] :int)
+(defn set-bool [self key value]
+  (c-set-bool (dr/ptr! self) key (count key) value)
+)
+
+(ffi/defcfn ^:private c-set-value "jolt_json_JsonValue_set_value_mv1" [:pointer :string :size_t :pointer] :int)
+(defn set-value [self key value]
+  (c-set-value (dr/ptr! self) key (count key) (dr/ptr! value))
+)
+
+(ffi/defcfn ^:private c-push "jolt_json_JsonValue_push_mv1" [:pointer :pointer] :int)
+(defn push [self value]
+  (c-push (dr/ptr! self) (dr/ptr! value))
+)
+

@@ -59,7 +59,7 @@ mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct JsonValue(serde_json::Value);
 
     impl JsonValue {
@@ -110,6 +110,99 @@ mod ffi {
 
         pub fn to_string(&self, write: &mut DiplomatWrite) {
             let _ = write.write_str(&self.0.to_string());
+        }
+
+        // -- builder API (added for lambda-mvp-rst: Jolt has no native
+        // JSON library, so a handler that wants to *build* a response
+        // object — not just parse/read one — needs these. See
+        // lambda-mvp-jlt's handler.clj, which hand-assembles JSON by
+        // string interpolation for exactly this reason.)
+
+        pub fn new_object() -> Box<JsonValue> {
+            Box::new(JsonValue(serde_json::Value::Object(serde_json::Map::new())))
+        }
+
+        pub fn new_array() -> Box<JsonValue> {
+            Box::new(JsonValue(serde_json::Value::Array(Vec::new())))
+        }
+
+        pub fn new_string(value: &str) -> Box<JsonValue> {
+            Box::new(JsonValue(serde_json::Value::String(value.to_string())))
+        }
+
+        pub fn new_number(value: f64) -> Box<JsonValue> {
+            let n = serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null);
+            Box::new(JsonValue(n))
+        }
+
+        pub fn new_bool(value: bool) -> Box<JsonValue> {
+            Box::new(JsonValue(serde_json::Value::Bool(value)))
+        }
+
+        /// Sets `key` to a string value. No-op (returns `false`) if `self`
+        /// isn't an object — the generator's `unwrap-result!`/nullable
+        /// conventions don't cover a silently-ignored write, so callers
+        /// must check the return value rather than assume success.
+        pub fn set_string(&mut self, key: &str, value: &str) -> bool {
+            match self.0.as_object_mut() {
+                Some(map) => {
+                    map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                    true
+                }
+                None => false,
+            }
+        }
+
+        pub fn set_number(&mut self, key: &str, value: f64) -> bool {
+            match self.0.as_object_mut() {
+                Some(map) => {
+                    let n = serde_json::Number::from_f64(value)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null);
+                    map.insert(key.to_string(), n);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        pub fn set_bool(&mut self, key: &str, value: bool) -> bool {
+            match self.0.as_object_mut() {
+                Some(map) => {
+                    map.insert(key.to_string(), serde_json::Value::Bool(value));
+                    true
+                }
+                None => false,
+            }
+        }
+
+        /// Embeds a clone of `value` (any kind — object/array/scalar) under
+        /// `key`. Clone, not move: `value` stays owned by its own caller-held
+        /// handle and must still be freed independently — this mirrors
+        /// `array_get`'s existing clone-out convention above rather than
+        /// introducing a new ownership rule for one method.
+        pub fn set_value(&mut self, key: &str, value: &JsonValue) -> bool {
+            match self.0.as_object_mut() {
+                Some(map) => {
+                    map.insert(key.to_string(), value.0.clone());
+                    true
+                }
+                None => false,
+            }
+        }
+
+        /// Appends a clone of `value` to `self`. Same clone convention as
+        /// `set_value`.
+        pub fn push(&mut self, value: &JsonValue) -> bool {
+            match self.0.as_array_mut() {
+                Some(arr) => {
+                    arr.push(value.0.clone());
+                    true
+                }
+                None => false,
+            }
         }
     }
 }

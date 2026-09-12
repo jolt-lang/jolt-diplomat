@@ -41,6 +41,26 @@ json_JsonValue_object_get_mv1_result json_JsonValue_object_get_mv1(const JsonVal
 
 void json_JsonValue_to_string_mv1(const JsonValue* self, DiplomatWrite* write);
 
+JsonValue* json_JsonValue_new_object_mv1(void);
+
+JsonValue* json_JsonValue_new_array_mv1(void);
+
+JsonValue* json_JsonValue_new_string_mv1(DiplomatStringView value);
+
+JsonValue* json_JsonValue_new_number_mv1(double value);
+
+JsonValue* json_JsonValue_new_bool_mv1(bool value);
+
+bool json_JsonValue_set_string_mv1(JsonValue* self, DiplomatStringView key, DiplomatStringView value);
+
+bool json_JsonValue_set_number_mv1(JsonValue* self, DiplomatStringView key, double value);
+
+bool json_JsonValue_set_bool_mv1(JsonValue* self, DiplomatStringView key, bool value);
+
+bool json_JsonValue_set_value_mv1(JsonValue* self, DiplomatStringView key, const JsonValue* value);
+
+bool json_JsonValue_push_mv1(JsonValue* self, const JsonValue* value);
+
 void json_JsonValue_destroy_mv1(JsonValue* self);
 
 
