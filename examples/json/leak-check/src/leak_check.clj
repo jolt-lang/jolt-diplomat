@@ -63,6 +63,19 @@
     (jv/parse "{bad json}")
     (catch clojure.lang.ExceptionInfo _e nil)))
 
+(defn round-builder []
+  (dr/with-opaque [event (jv/parse "{\"k\":\"v\"}")]
+    (dr/with-opaque [resp (jv/new-object)]
+      (jv/set-string resp "message" "hello")
+      (jv/set-number resp "n" 3.0)
+      (jv/set-bool resp "ok" 1)
+      (jv/set-value resp "event" event)
+      (dr/with-opaque [tags (jv/new-array)]
+        (dr/with-opaque [a (jv/new-string "a")]
+          (jv/push tags a))
+        (jv/set-value resp "tags" tags))
+      (String. (jv/to-string resp)))))
+
 (defn run-round []
   (round-scalar)
   (round-bool)
@@ -70,7 +83,8 @@
   (round-array)
   (round-object)
   (round-to-string)
-  (round-parse-error))
+  (round-parse-error)
+  (round-builder))
 
 (def iterations 20000)
 

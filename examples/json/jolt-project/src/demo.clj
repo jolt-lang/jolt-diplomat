@@ -49,4 +49,20 @@
   (try
     (jv/parse "{bad json}")
     (catch clojure.lang.ExceptionInfo e
-      (println "parse error:" (ex-message e)))))
+      (println "parse error:" (ex-message e))))
+
+  ;; builder API (added for lambda-mvp-rst: build a response object from
+  ;; scratch, embed a parsed value, serialize)
+  (dr/with-opaque [event (jv/parse "{\"key1\":\"value1\",\"key2\":\"value2\"}")]
+    (dr/with-opaque [resp (jv/new-object)]
+      (jv/set-string resp "message" "hello from jolt-diplomat")
+      (jv/set-number resp "warm_invocation" 3.0)
+      (jv/set-bool resp "ok" 1)
+      (jv/set-value resp "event" event)
+      (dr/with-opaque [tags (jv/new-array)]
+        (dr/with-opaque [a (jv/new-string "a")]
+          (jv/push tags a))
+        (dr/with-opaque [b (jv/new-string "b")]
+          (jv/push tags b))
+        (jv/set-value resp "tags" tags))
+      (println "built object:" (String. (jv/to-string resp))))))

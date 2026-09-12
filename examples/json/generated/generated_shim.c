@@ -57,3 +57,27 @@ void jolt_json_JsonValue_to_string_mv1(const JsonValue* self, DiplomatWrite* wri
     json_JsonValue_to_string_mv1(self, write);
 }
 
+void* jolt_json_JsonValue_new_string_mv1(const char* value_data, size_t value_len) {
+    return json_JsonValue_new_string_mv1((DiplomatStringView){ .data = value_data, .len = value_len });
+}
+
+bool jolt_json_JsonValue_set_string_mv1(JsonValue* self, const char* key_data, size_t key_len, const char* value_data, size_t value_len) {
+    return json_JsonValue_set_string_mv1(self, (DiplomatStringView){ .data = key_data, .len = key_len }, (DiplomatStringView){ .data = value_data, .len = value_len });
+}
+
+bool jolt_json_JsonValue_set_number_mv1(JsonValue* self, const char* key_data, size_t key_len, double value) {
+    return json_JsonValue_set_number_mv1(self, (DiplomatStringView){ .data = key_data, .len = key_len }, value);
+}
+
+bool jolt_json_JsonValue_set_bool_mv1(JsonValue* self, const char* key_data, size_t key_len, bool value) {
+    return json_JsonValue_set_bool_mv1(self, (DiplomatStringView){ .data = key_data, .len = key_len }, value);
+}
+
+bool jolt_json_JsonValue_set_value_mv1(JsonValue* self, const char* key_data, size_t key_len, const JsonValue* value) {
+    return json_JsonValue_set_value_mv1(self, (DiplomatStringView){ .data = key_data, .len = key_len }, value);
+}
+
+bool jolt_json_JsonValue_push_mv1(JsonValue* self, const JsonValue* value) {
+    return json_JsonValue_push_mv1(self, value);
+}
+

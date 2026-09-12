@@ -71,7 +71,13 @@
       (die (str "Error: could not find [lib] name in " (fs/path capi "Cargo.toml")))))
 
 (def dylib-dir (fs/path target-dir build-dir))
-(def shim-out  (fs/path demo (str "lib" lib-name out-suffix "_shim.dylib")))
+;; cargo already picks the right cdylib extension per-OS (.dylib on macOS,
+;; .so on Linux) -- the hand-written shim name must match it, or bind.clj
+;; silently produces a shim no Linux (e.g. AL2023 Lambda) build can load.
+(def native-ext (if (str/includes? (str/lower-case (System/getProperty "os.name" "")) "mac")
+                   "dylib"
+                   "so"))
+(def shim-out  (fs/path demo (str "lib" lib-name out-suffix "_shim." native-ext)))
 
 (println (str "=== jolt-bind: " lib-name " ==="))
 (println (str "    capi:      " capi))
@@ -114,6 +120,6 @@
 
 (println "")
 (println "Done.")
-(println (str "  cdylib: " dylib-dir "/lib" lib-name ".dylib"))
+(println (str "  cdylib: " dylib-dir "/lib" lib-name "." native-ext))
 (println (str "  shim:   " shim-out))
 (println (str "  clj:    " generated "/diplomat/"))
