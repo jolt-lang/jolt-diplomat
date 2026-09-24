@@ -2,6 +2,9 @@
 name = "jolt-diplomat-backend"
 version = "0.1.0"
 edition = "2021"
+description = "Codegen backend: Diplomat C headers -> Jolt (Clojure) bindings + shim C"
+license = "MIT"
+repository = "https://github.com/jolt-lang/jolt-diplomat"
 
 [[bin]]
 name = "jolt-diplomat-backend"
