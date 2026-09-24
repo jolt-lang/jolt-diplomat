@@ -3,6 +3,8 @@ name = "jolt-diplomat-macros"
 version = "0.1.0"
 edition = "2021"
 description = "Proc-macro attributes for jolt-diplomat code generation"
+license = "MIT"
+repository = "https://github.com/jolt-lang/jolt-diplomat"
 
 [lib]
 proc-macro = true
