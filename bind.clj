@@ -48,7 +48,17 @@
 (def backend   (fs/path root "backend"))
 (def headers   (fs/path demo (str "c-headers" out-suffix)))
 (def generated (fs/path demo (str "generated" out-suffix)))
-(def generator (fs/path backend "target" "debug" "jolt-diplomat-backend"))
+
+;; External use: `cargo install jolt-diplomat-backend` (crates.io) puts the
+;; binary on PATH, and bind.clj no longer needs to sit next to a `backend/`
+;; checkout at all.
+;; Repo-local dev fallback: if backend/ exists next to this script and
+;; nothing is on PATH, build+run it from source like before.
+(def installed? (zero? (:exit (p/sh "which" "jolt-diplomat-backend"))))
+(def generator
+  (if installed?
+    "jolt-diplomat-backend"
+    (str (fs/path backend "target" "debug" "jolt-diplomat-backend"))))
 
 ;; A plain `cargo build` always writes to <capi>/target/<profile>/lib<name>.
 ;; With no separate target dir per feature set, a default build and a
@@ -102,7 +112,14 @@
 (p/shell {:dir (str capi)} "diplomat-tool" "c" (str headers) "-e" "src/lib.rs")
 
 (println "--- 3. Build Jolt generator ---")
-(p/shell "cargo" "build" "--manifest-path" (str (fs/path backend "Cargo.toml")))
+(if installed?
+  (println (str "    using installed " generator))
+  (do
+    (when-not (fs/exists? (fs/path backend "Cargo.toml"))
+      (die (str "jolt-diplomat-backend not found on PATH and no backend/ checkout at "
+                backend ". Run `cargo install jolt-diplomat-backend`, or `cargo install "
+                "--path backend` from a rust-jolt checkout.")))
+    (p/shell "cargo" "build" "--manifest-path" (str (fs/path backend "Cargo.toml")))))
 
 (println "--- 4. Generate Clojure bindings + shim C ---")
 (when (fs/exists? generated) (fs/delete-tree generated))
