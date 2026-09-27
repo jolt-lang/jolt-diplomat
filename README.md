@@ -197,6 +197,8 @@ Pin a commit SHA from [jolt-lang/jolt-diplomat](https://github.com/jolt-lang/jol
 
 (Working inside this repo already, e.g. one of the examples? Use `:local/root "../../../runtime"` instead — no need to fetch over git.)
 
+Releases are tagged (`v0.1.0`, ...) at the commit where `jolt-diplomat-macros` and `jolt-diplomat-backend` were published to crates.io, so `runtime/` at that same commit is guaranteed compatible with whatever crates.io versions you installed in steps 1-2. Resolve a tag to a SHA with `git ls-remote --tags https://github.com/jolt-lang/jolt-diplomat` (or `git rev-parse v0.1.0` in a local clone) and pin that SHA above — `:git/sha` needs the full commit hash, not the tag name itself.
+
 ### 5. Call from Jolt
 
 ```clojure
