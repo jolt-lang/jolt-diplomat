@@ -159,24 +159,45 @@ mod ffi {
 }
 ```
 
-### 2. Run bind.clj
+### 2. Get the generator and bind.clj
+
+```bash
+cargo install jolt-diplomat-backend
+```
+
+`bind.clj` isn't published anywhere — it's a script, not a crate — so fetch it directly from this repo (curl, or clone if you'd rather have the whole thing):
+
+```bash
+curl -O https://raw.githubusercontent.com/jolt-lang/jolt-diplomat/main/bind.clj
+chmod +x bind.clj
+```
+
+### 3. Run bind.clj
 
 ```bash
 ./bind.clj path/to/my_capi --release
 ```
 
+`bind.clj` looks for `jolt-diplomat-backend` on `PATH` first (from step 2 above) and only falls back to building it from a local `backend/` checkout if nothing is installed — so this works with no rust-jolt clone in sight.
+
 Outputs: `generated/diplomat/*.clj`, `generated/generated_shim.c`, `libmy_capi_shim.dylib`.
 
-### 3. Add runtime dep
+### 4. Add runtime dep
+
+Pin a commit SHA from [jolt-lang/jolt-diplomat](https://github.com/jolt-lang/jolt-diplomat) — `:deps/root` scopes the git dep down to the `runtime/` subdirectory:
 
 ```edn
 ; deps.edn
 {:paths ["src" "../generated"]
  :deps {jolt-diplomat-runtime/jolt-diplomat-runtime
-        {:local/root "../../../runtime"}}}
+        {:git/url "https://github.com/jolt-lang/jolt-diplomat"
+         :git/sha "<full commit SHA>"
+         :deps/root "runtime"}}}
 ```
 
-### 4. Call from Jolt
+(Working inside this repo already, e.g. one of the examples? Use `:local/root "../../../runtime"` instead — no need to fetch over git.)
+
+### 5. Call from Jolt
 
 ```clojure
 (require '[diplomat.runtime :as dr])
@@ -194,7 +215,7 @@ Add `jolt-diplomat-macros` to your crate and annotate the method — the generat
 ```toml
 # my_capi/Cargo.toml
 [dependencies]
-jolt-diplomat-macros = { git = "https://github.com/yourorg/jolt-diplomat" }
+jolt-diplomat-macros = "0.1"
 ```
 
 ```rust
