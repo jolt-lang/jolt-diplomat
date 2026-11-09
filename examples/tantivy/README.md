@@ -38,17 +38,15 @@ An e-commerce catalog needs BM25-ranked full-text search with sub-millisecond qu
 ## Running
 
 ```bash
-# Quick run (pre-built bindings + shim included)
-cd examples/tantivy/jolt-project
+# Build the cdylib and shim first (they are not checked in), and again
+# after changing the crate
+cd examples/tantivy
+./build.sh
+cd jolt-project
 jolt run -m demo
 
 # Smoke test (non-interactive)
 jolt run -m demo src/demo.clj --test
-
-# Rebuild from source
-cd examples/tantivy
-../../bind.clj tantivy_capi
-cd jolt-project && jolt run -m demo
 ```
 
 ## Rust tests
