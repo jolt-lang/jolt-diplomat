@@ -27,7 +27,7 @@
   (ffi/with-alloc [out @sz-decode-result]
     (let [s (dr/writeable-capture (fn [w__] (c-decode input (alength (.getBytes input)) w__ out)))]
       (dr/unwrap-result!
-       (if (= 1 (ffi/read out :uint8 @is-ok-off-decode))
+       (if (ffi/read out :bool @is-ok-off-decode)
          {:ok? true :value s}
          {:ok? false :error (base64-error/->Base64Error (ffi/read out :pointer 0) (atom false))})
            "Hex/decode" base64-error/message)

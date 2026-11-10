@@ -17,7 +17,7 @@
   (ffi/with-alloc [out @sz-open-result]
     (c-open sample-rate out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-open))
+     (if (ffi/read out :bool @is-ok-off-open)
        {:ok? true :value (->AudioStream (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (audio-error/->AudioError (ffi/read out :pointer 0) (atom false))})
        "AudioStream/open" audio-error/message)

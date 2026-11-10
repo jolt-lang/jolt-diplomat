@@ -17,7 +17,7 @@
   (ffi/with-alloc [out @sz-create-result]
     (c-create title (alength (.getBytes title)) width height out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-create))
+     (if (ffi/read out :bool @is-ok-off-create)
        {:ok? true :value (->SdlApp (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/create" sdl-error/message)
@@ -33,7 +33,7 @@
   (ffi/with-alloc [out @sz-load-font-result]
     (c-load-font (dr/ptr! self) path (alength (.getBytes path)) pt-size out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-load-font))
+     (if (ffi/read out :bool @is-ok-off-load-font)
        {:ok? true :value nil}
        {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/load-font" sdl-error/message)
@@ -90,7 +90,7 @@
   (ffi/with-alloc [out @sz-set-title-result]
     (c-set-title (dr/ptr! self) title (alength (.getBytes title)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-set-title))
+     (if (ffi/read out :bool @is-ok-off-set-title)
        {:ok? true :value nil}
        {:ok? false :error (sdl-error/->SdlError (ffi/read out :pointer 0) (atom false))})
        "SdlApp/set-title" sdl-error/message)
