@@ -35,7 +35,7 @@
   (ffi/with-alloc [out-val 8]
     (ffi/with-alloc [out-is-ok 1]
       (c-as-bool (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :int 0))))
+      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (not= 0 (ffi/read out-val :uint8 0)))))
 )
 
 (ffi/defcfn ^:private c-as-f64 "jolt_json_JsonValue_as_f64_mv1" [:pointer :pointer :pointer] :void)

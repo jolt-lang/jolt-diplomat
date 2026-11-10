@@ -1225,11 +1225,19 @@ fn gen_method(
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
         body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))))"));
-    } else if let ReturnKind::NullablePrim { jolt_ty, .. } = &rk {
+    } else if let ReturnKind::NullablePrim { jolt_ty, c_ty } = &rk {
+        // The shim stores through a `bool*`, one byte into an allocation that
+        // is not zeroed: read that byte, and normalize to a boolean as the
+        // plain bool return below does.
+        let read_val = if *c_ty == "bool" {
+            "(not= 0 (ffi/read out-val :uint8 0))".to_string()
+        } else {
+            format!("(ffi/read out-val {jolt_ty} 0)")
+        };
         body_lines.push("(ffi/with-alloc [out-val 8]".to_string());
         body_lines.push("  (ffi/with-alloc [out-is-ok 1]".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val {jolt_ty} 0))))"));
+        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) {read_val})))"));
     } else if let ReturnKind::Enum { alias, .. } = &rk {
         body_lines.push(format!("({alias}/int->kw (c-{fn_name} {}))", shim_call_exprs.join(" ")));
     } else if let ReturnKind::Opaque { target } = &rk {
@@ -1470,6 +1478,36 @@ mod tests {
         assert!(
             out.contains("with-primitive-buffer"),
             "a borrowed &[u8] param must go through dr/with-primitive-buffer"
+        );
+    }
+
+    // The shim stores an Option<bool> through a bool* (one byte) into an
+    // allocation that is not zeroed, so the binding must read one byte, and
+    // return a boolean like a plain bool return does.
+    #[test]
+    fn nullable_bool_return_reads_one_byte_as_a_boolean() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Flag;
+
+                impl Flag {
+                    pub fn get(&self) -> Option<bool> {
+                        Some(true)
+                    }
+                }
+            }
+        "#);
+        let m = find_opaque_method(&tcx, "Flag", "get");
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+        assert!(gen_method(&tcx, "Flag", m, &mut out, &mut shim_c, &mut extra_requires));
+        assert!(shim_c.contains("bool* out_val"), "shim writes a bool: {shim_c}");
+        assert!(
+            out.contains("(not= 0 (ffi/read out-val :uint8 0))"),
+            "Option<bool> must read one byte and normalize to a boolean: {out}"
         );
     }
 
