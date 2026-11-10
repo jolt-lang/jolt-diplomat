@@ -258,35 +258,30 @@ xcode-select --install
 
 ### Build an example
 
-Each example ships with pre-generated bindings and a pre-compiled shim dylib, so for a quick run you only need Jolt:
-
-```bash
-cd examples/chrono/jolt-project
-jolt run -m demo
-```
-
-To rebuild from source (e.g. after modifying the Rust crate):
+Each example ships with pre-generated bindings, but not the native libraries: the crate's cdylib and the shim dylib are build outputs (`*.dylib`/`*.so` are gitignored). Build them once with the example's `build.sh`, which runs `bind.clj` on the crate in release mode, then run the demo:
 
 ```bash
 cd examples/chrono
-../../bind.clj chrono_capi   # runs the full pipeline: cargo → diplomat-tool → generator → cc
+./build.sh        # cargo → diplomat-tool → generator → cc
 cd jolt-project
 jolt run -m demo
 ```
+
+This needs every prerequisite above. Inside this repo `bind.clj` builds `jolt-diplomat-backend` from `backend/` if it isn't on `PATH`. `build.sh` passes `--release` because `load!` loads the cdylib from `<crate>/target/release/`; running `../../bind.clj chrono_capi` by hand without `--release` builds a debug cdylib the demo won't find. Run `build.sh` again after changing the Rust crate.
 
 ### All examples at once
 
 ```bash
 for demo in url regex semver base64 json chrono markdown callback tantivy; do
   echo "=== $demo ==="
-  (cd examples/$demo/jolt-project && jolt run -m demo)
+  examples/$demo/build.sh && (cd examples/$demo/jolt-project && jolt run -m demo)
 done
 ```
 
 `sdl3` opens a window and runs its own event loop — run it on its own, not in the batch loop above:
 
 ```bash
-(cd examples/sdl3/jolt-project && jolt run -m demo)
+examples/sdl3/build.sh && (cd examples/sdl3/jolt-project && jolt run -m demo)
 ```
 
 ### What each example demonstrates

@@ -1,3 +1,3 @@
-#\!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
-exec "$(dirname "$0")/../../bind.sh" "$(dirname "$0")/regex_capi" --release
+exec "$(dirname "$0")/../../bind.clj" "$(dirname "$0")/regex_capi" --release
