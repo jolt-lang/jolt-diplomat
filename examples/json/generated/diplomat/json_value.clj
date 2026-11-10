@@ -18,7 +18,7 @@
   (ffi/with-alloc [out @sz-parse-result]
     (c-parse text (alength (.getBytes text)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+     (if (ffi/read out :bool @is-ok-off-parse)
        {:ok? true :value (->JsonValue (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (json-error/->JsonError (ffi/read out :pointer 0) (atom false))})
        "JsonValue/parse" json-error/message)
@@ -35,7 +35,7 @@
   (ffi/with-alloc [out-val 8]
     (ffi/with-alloc [out-is-ok 1]
       (c-as-bool (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (not= 0 (ffi/read out-val :uint8 0)))))
+      (when (ffi/read out-is-ok :bool 0) (ffi/read out-val :bool 0))))
 )
 
 (ffi/defcfn ^:private c-as-f64 "jolt_json_JsonValue_as_f64_mv1" [:pointer :pointer :pointer] :void)
@@ -43,7 +43,7 @@
   (ffi/with-alloc [out-val 8]
     (ffi/with-alloc [out-is-ok 1]
       (c-as-f64 (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :double 0))))
+      (when (ffi/read out-is-ok :bool 0) (ffi/read out-val :double 0))))
 )
 
 (ffi/defcfn ^:private c-as-str "jolt_json_JsonValue_as_str_mv1" [:pointer :pointer] :int)
@@ -56,7 +56,7 @@
   (ffi/with-alloc [out-val 8]
     (ffi/with-alloc [out-is-ok 1]
       (c-array-len (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint64 0))))
+      (when (ffi/read out-is-ok :bool 0) (ffi/read out-val :uint64 0))))
 )
 
 (ffi/defcfn ^:private c-array-get "json_JsonValue_array_get_mv1" [:pointer :uint64] :pointer)
@@ -86,31 +86,31 @@
 (ffi/defcfn ^:private c-new-number "json_JsonValue_new_number_mv1" [:double] :pointer)
 (defn new-number [value] (->JsonValue (c-new-number value) (atom false)))
 
-(ffi/defcfn ^:private c-new-bool "json_JsonValue_new_bool_mv1" [:int] :pointer)
+(ffi/defcfn ^:private c-new-bool "json_JsonValue_new_bool_mv1" [:bool] :pointer)
 (defn new-bool [value] (->JsonValue (c-new-bool value) (atom false)))
 
-(ffi/defcfn ^:private c-set-string "jolt_json_JsonValue_set_string_mv1" [:pointer :string :size_t :string :size_t] :int)
+(ffi/defcfn ^:private c-set-string "jolt_json_JsonValue_set_string_mv1" [:pointer :string :size_t :string :size_t] :bool)
 (defn set-string [self key value]
-  (not= 0 (c-set-string (dr/ptr! self) key (alength (.getBytes key)) value (alength (.getBytes value))))
+  (c-set-string (dr/ptr! self) key (alength (.getBytes key)) value (alength (.getBytes value)))
 )
 
-(ffi/defcfn ^:private c-set-number "jolt_json_JsonValue_set_number_mv1" [:pointer :string :size_t :double] :int)
+(ffi/defcfn ^:private c-set-number "jolt_json_JsonValue_set_number_mv1" [:pointer :string :size_t :double] :bool)
 (defn set-number [self key value]
-  (not= 0 (c-set-number (dr/ptr! self) key (alength (.getBytes key)) value))
+  (c-set-number (dr/ptr! self) key (alength (.getBytes key)) value)
 )
 
-(ffi/defcfn ^:private c-set-bool "jolt_json_JsonValue_set_bool_mv1" [:pointer :string :size_t :int] :int)
+(ffi/defcfn ^:private c-set-bool "jolt_json_JsonValue_set_bool_mv1" [:pointer :string :size_t :bool] :bool)
 (defn set-bool [self key value]
-  (not= 0 (c-set-bool (dr/ptr! self) key (alength (.getBytes key)) value))
+  (c-set-bool (dr/ptr! self) key (alength (.getBytes key)) value)
 )
 
-(ffi/defcfn ^:private c-set-value "jolt_json_JsonValue_set_value_mv1" [:pointer :string :size_t :pointer] :int)
+(ffi/defcfn ^:private c-set-value "jolt_json_JsonValue_set_value_mv1" [:pointer :string :size_t :pointer] :bool)
 (defn set-value [self key value]
-  (not= 0 (c-set-value (dr/ptr! self) key (alength (.getBytes key)) (dr/ptr! value)))
+  (c-set-value (dr/ptr! self) key (alength (.getBytes key)) (dr/ptr! value))
 )
 
-(ffi/defcfn ^:private c-push "jolt_json_JsonValue_push_mv1" [:pointer :pointer] :int)
+(ffi/defcfn ^:private c-push "jolt_json_JsonValue_push_mv1" [:pointer :pointer] :bool)
 (defn push [self value]
-  (not= 0 (c-push (dr/ptr! self) (dr/ptr! value)))
+  (c-push (dr/ptr! self) (dr/ptr! value))
 )
 

@@ -20,7 +20,7 @@
   (ffi/with-alloc [out @sz-parse-result]
     (c-parse s (alength (.getBytes s)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+     (if (ffi/read out :bool @is-ok-off-parse)
        {:ok? true :value (->DateTime (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (date-time-error/->DateTimeError (ffi/read out :pointer 0) (atom false))})
        "DateTime/parse" date-time-error/message)
