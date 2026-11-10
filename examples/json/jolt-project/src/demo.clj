@@ -20,7 +20,7 @@
 
   (dr/with-opaque [v (jv/parse "true")]
     (println "bool kind:" (jv/kind v))
-    (println "as-bool:" (not= 0 (jv/as-bool v))))
+    (println "as-bool:" (jv/as-bool v)))
 
   (dr/with-opaque [v (jv/parse "\"hello world\"")]
     (println "str kind:" (jv/kind v))

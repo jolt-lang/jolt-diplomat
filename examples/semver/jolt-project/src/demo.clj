@@ -20,15 +20,15 @@
     (println "str:"   (String. (v/to-string ver))))
 
   (dr/with-opaque [ver (v/parse "2.0.0-alpha.1")]
-    (println "prerelease?" (not= 0 (v/is-prerelease ver)))
+    (println "prerelease?" (v/is-prerelease ver))
     (println "pre tag:"    (some-> (v/pre ver) String.)))
 
   ;; VersionReq matching
   (dr/with-opaque [req (vr/parse ">=1.0, <2.0")]
     (dr/with-opaque [v1 (v/parse "1.5.0")]
-      (println "1.5.0 matches >=1.0,<2.0:" (not= 0 (vr/matches req v1))))
+      (println "1.5.0 matches >=1.0,<2.0:" (vr/matches req v1)))
     (dr/with-opaque [v2 (v/parse "2.0.0")]
-      (println "2.0.0 matches >=1.0,<2.0:" (not= 0 (vr/matches req v2)))))
+      (println "2.0.0 matches >=1.0,<2.0:" (vr/matches req v2))))
 
   ;; Error path
   (try
