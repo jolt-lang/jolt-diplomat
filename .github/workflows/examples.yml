@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install jolt runtime deps
         if: runner.os == 'Linux'
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6
       - id: jolt
         uses: jlt-commons/setup-jolt@v1.0.2
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/diplomat-tool
@@ -40,8 +40,10 @@ jobs:
         run: |
           command -v diplomat-tool >/dev/null \
             || cargo install diplomat-tool --version "=$DIPLOMAT_TOOL_VERSION" --locked
-      - name: Macro tests
-        run: cargo test --manifest-path macros/Cargo.toml
+      - name: Generator and macro tests
+        run: |
+          cargo test --manifest-path backend/Cargo.toml
+          cargo test --manifest-path macros/Cargo.toml
       # Each build.sh runs bind.clj (cargo -> diplomat-tool -> generator -> cc);
       # bind.clj builds jolt-diplomat-backend from backend/. sdl3 opens a window
       # and runs its own event loop, so it is left out, as in the README.
