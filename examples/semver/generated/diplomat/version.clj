@@ -17,7 +17,7 @@
   (ffi/with-alloc [out @sz-parse-result]
     (c-parse text (alength (.getBytes text)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+     (if (ffi/read out :bool @is-ok-off-parse)
        {:ok? true :value (->Version (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (parse-error/->ParseError (ffi/read out :pointer 0) (atom false))})
        "Version/parse" parse-error/message)
@@ -38,8 +38,8 @@
   (dr/writeable-capture (fn [w__] (c-to-string (dr/ptr! self) w__)))
 )
 
-(ffi/defcfn ^:private c-is-prerelease "sv_Version_is_prerelease_mv1" [:pointer] :int)
-(defn is-prerelease [self] (not= 0 (c-is-prerelease (dr/ptr! self))))
+(ffi/defcfn ^:private c-is-prerelease "sv_Version_is_prerelease_mv1" [:pointer] :bool)
+(defn is-prerelease [self] (c-is-prerelease (dr/ptr! self)))
 
 (ffi/defcfn ^:private c-pre "jolt_sv_Version_pre_mv1" [:pointer :pointer] :int)
 (defn pre [self]

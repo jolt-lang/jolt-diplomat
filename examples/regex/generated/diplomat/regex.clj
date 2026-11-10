@@ -17,16 +17,16 @@
   (ffi/with-alloc [out @sz-create-result]
     (c-create pattern (alength (.getBytes pattern)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-create))
+     (if (ffi/read out :bool @is-ok-off-create)
        {:ok? true :value (->Regex (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (regex-error/->RegexError (ffi/read out :pointer 0) (atom false))})
        "Regex/create" regex-error/message)
   )
 )
 
-(ffi/defcfn ^:private c-is-match "jolt_rx_Regex_is_match_mv1" [:pointer :string :size_t] :int)
+(ffi/defcfn ^:private c-is-match "jolt_rx_Regex_is_match_mv1" [:pointer :string :size_t] :bool)
 (defn is-match [self text]
-  (not= 0 (c-is-match (dr/ptr! self) text (alength (.getBytes text))))
+  (c-is-match (dr/ptr! self) text (alength (.getBytes text)))
 )
 
 (ffi/defcfn ^:private c-find "jolt_rx_Regex_find_mv1" [:pointer :string :size_t :pointer] :int)

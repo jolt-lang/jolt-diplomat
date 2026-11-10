@@ -17,7 +17,7 @@
   (ffi/with-alloc [out @sz-parse-result]
     (c-parse input (alength (.getBytes input)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-parse))
+     (if (ffi/read out :bool @is-ok-off-parse)
        {:ok? true :value (->Url (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (url-error/->UrlError (ffi/read out :pointer 0) (atom false))})
        "Url/parse" url-error/message)
@@ -49,7 +49,7 @@
   (ffi/with-alloc [out-val 8]
     (ffi/with-alloc [out-is-ok 1]
       (c-port (dr/ptr! self) out-val out-is-ok)
-      (when (not= 0 (ffi/read out-is-ok :uint8 0)) (ffi/read out-val :uint 0))))
+      (when (ffi/read out-is-ok :bool 0) (ffi/read out-val :uint 0))))
 )
 
 (ffi/defcfn ^:private c-to-string "jolt_url_Url_to_string_mv1" [:pointer :pointer] :void)
@@ -69,5 +69,5 @@
 (defn info [self]
   (ffi/with-alloc [out @sz-url-info-struct]
     (c-info (dr/ptr! self) out)
-    {:port (dr/read-u16 out @off-url-info-port) :has-port (ffi/read out :uint8 @off-url-info-has-port) :path-len (ffi/read out :uint @off-url-info-path-len)}))
+    {:port (dr/read-u16 out @off-url-info-port) :has-port (ffi/read out :bool @off-url-info-has-port) :path-len (ffi/read out :uint @off-url-info-path-len)}))
 

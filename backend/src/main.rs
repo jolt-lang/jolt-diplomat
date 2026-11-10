@@ -72,7 +72,7 @@ fn to_kebab(s: &str) -> String {
 
 fn prim_to_jolt_and_c(p: &PrimitiveType) -> (&'static str, &'static str) {
     match p {
-        PrimitiveType::Bool => (":int", "bool"), // no :bool keyword — verified
+        PrimitiveType::Bool => (":bool", "bool"),
         PrimitiveType::Int(IntType::U8) => (":uint8", "uint8_t"),
         PrimitiveType::Int(IntType::I8) => (":int", "int8_t"),
         PrimitiveType::Int(IntType::I32) => (":int", "int32_t"),
@@ -101,7 +101,8 @@ fn c_ty_to_jolt_kw(c_ty: &str) -> &'static str {
     match c_ty {
         "uint8_t" => ":uint8",
         "uint16_t" | "uint32_t" | "char32_t" => ":uint",
-        "int8_t" | "int16_t" | "int32_t" | "bool" => ":int",
+        "int8_t" | "int16_t" | "int32_t" => ":int",
+        "bool" => ":bool",
         "int64_t" => ":int64",
         "uint64_t" => ":uint64",
         "size_t" => ":size_t",
@@ -251,13 +252,13 @@ fn diplomat_tool_c_attr_support() -> hir::BackendAttrSupport {
 // an Option<primitive/enum> leaf, or a nested struct.
 #[allow(dead_code)]
 enum FieldShape {
-    Prim { jolt_ty: String, c_ty: String, is_bool: bool },
+    Prim { jolt_ty: String, c_ty: String },
     EnumField { c_ty: String, enum_alias: String },
     // DiplomatOption<T>: C ABI is { T value; bool is_some } by value.
     // We emit two shim params: the inner value and a bool sentinel.
     // Jolt caller passes nil (→ is_some=0) or the value (→ is_some=1).
     // Option{Suffix} macro types: { union { T ok; }; bool is_ok; }
-    OptionPrim { jolt_ty: String, opt_ty: String }, // opt_ty = "OptionU8" etc.
+    OptionPrim { jolt_ty: String, c_ty: String, opt_ty: String }, // opt_ty = "OptionU8" etc.
     OptionEnum { enum_name: String, enum_alias: String }, // {EnumName}_option
     Nested { c_struct_name: String, fields: Vec<(String, FieldShape)> },
 }
@@ -270,7 +271,7 @@ fn resolve_field_shape<P: hir::TyPosition>(
     match ty {
         Type::Primitive(p) => {
             let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
-            Ok(FieldShape::Prim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string(), is_bool: matches!(p, PrimitiveType::Bool) })
+            Ok(FieldShape::Prim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string() })
         }
         Type::Enum(ep) => {
             let ed = tcx.resolve_enum(ep.tcx_id);
@@ -280,9 +281,9 @@ fn resolve_field_shape<P: hir::TyPosition>(
         }
         Type::DiplomatOption(inner) => match inner.as_ref() {
             Type::Primitive(p) => {
-                let (jolt_ty, _) = prim_to_jolt_and_c(p);
+                let (jolt_ty, c_ty) = prim_to_jolt_and_c(p);
                 let opt_ty = format!("Option{}", prim_to_diplomat_view_suffix(p));
-                Ok(FieldShape::OptionPrim { jolt_ty: jolt_ty.to_string(), opt_ty })
+                Ok(FieldShape::OptionPrim { jolt_ty: jolt_ty.to_string(), c_ty: c_ty.to_string(), opt_ty })
             }
             Type::Enum(ep) => {
                 let ed = tcx.resolve_enum(ep.tcx_id);
@@ -308,6 +309,13 @@ fn resolve_field_shape<P: hir::TyPosition>(
     }
 }
 
+/// The value half of an Option<primitive> argument. nil becomes 0, except
+/// for a bool: :bool already passes nil and false as 0, and would read the
+/// number 0 as true.
+fn option_value_expr(c_ty: &str, clj_access: &str) -> String {
+    if c_ty == "bool" { clj_access.to_string() } else { format!("(or {clj_access} 0)") }
+}
+
 fn flatten_leaves(
     shape: &FieldShape,
     flat_prefix: &str,
@@ -315,27 +323,26 @@ fn flatten_leaves(
     out: &mut Vec<(String, String, String, String)>, // (c_ty, flat_c_name, jolt_ty, call_expr)
 ) {
     match shape {
-        FieldShape::Prim { jolt_ty, c_ty, is_bool } => {
-            let call_expr = if *is_bool { format!("(if {clj_access} 1 0)") } else { clj_access.to_string() };
-            out.push((c_ty.clone(), flat_prefix.to_string(), jolt_ty.clone(), call_expr));
+        FieldShape::Prim { jolt_ty, c_ty } => {
+            out.push((c_ty.clone(), flat_prefix.to_string(), jolt_ty.clone(), clj_access.to_string()));
         }
         FieldShape::EnumField { c_ty, enum_alias } => {
             out.push((c_ty.clone(), flat_prefix.to_string(), ":int".to_string(),
                 format!("({enum_alias}/kw->int {clj_access})")));
         }
-        FieldShape::OptionPrim { jolt_ty, .. } => {
+        FieldShape::OptionPrim { jolt_ty, c_ty, .. } => {
             // Flatten to two scalar C params; build_c_literal reconstructs OptionX.
             // _ok holds the value (0 if nil), _is_ok is the boolean.
-            out.push(("int".to_string(), format!("{flat_prefix}_ok"), jolt_ty.clone(),
-                format!("(or {clj_access} 0)")));
-            out.push(("bool".to_string(), format!("{flat_prefix}_is_ok"), ":int".to_string(),
-                format!("(if (nil? {clj_access}) 0 1)")));
+            out.push((c_ty.clone(), format!("{flat_prefix}_ok"), jolt_ty.clone(),
+                option_value_expr(c_ty, clj_access)));
+            out.push(("bool".to_string(), format!("{flat_prefix}_is_ok"), ":bool".to_string(),
+                format!("(some? {clj_access})")));
         }
         FieldShape::OptionEnum { enum_name, enum_alias } => {
             out.push((enum_name.clone(), format!("{flat_prefix}_ok"), ":int".to_string(),
                 format!("(if {clj_access} ({enum_alias}/kw->int {clj_access}) 0)")));
-            out.push(("bool".to_string(), format!("{flat_prefix}_is_ok"), ":int".to_string(),
-                format!("(if (nil? {clj_access}) 0 1)")));
+            out.push(("bool".to_string(), format!("{flat_prefix}_is_ok"), ":bool".to_string(),
+                format!("(some? {clj_access})")));
         }
         FieldShape::Nested { fields, .. } => {
             for (fname, sub) in fields {
@@ -392,7 +399,6 @@ fn collect_struct_field_leaves(
         match shape {
             FieldShape::Prim { jolt_ty, c_ty, .. } => {
                 let read_ty = match c_ty.as_str() {
-                    "bool" => ":uint8".to_string(),
                     "uint16_t" | "int16_t" => ":u16".to_string(),
                     _ => jolt_ty.clone(),
                 };
@@ -753,8 +759,6 @@ fn gen_method(
                 format!("(let [p {call}] (when (not= 0 p) {wrap}))")
             }
             ReturnKind::Opaque { target } => emit_opaque_wrap(target, owner, &call, false),
-            // 0 is truthy in Clojure/Jolt — normalize to a real boolean.
-            ReturnKind::PlainPrim { c_ty: "bool" } => format!("(not= 0 {call})"),
             _ => call,
         };
         let _ = writeln!(out, "(defn {fn_name} [{}] {body})", public_names.join(" "));
@@ -880,8 +884,8 @@ fn gen_method(
                         let opt_ty = format!("Option{view_suffix}");
                         c_params.push(format!("{c_ty} {cname}_value"));
                         c_params.push(format!("bool {cname}_is_ok"));
-                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: format!("(or {pname} 0)") });
-                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)") });
+                        arg_specs.push(ArgSpec { clj_type: jolt_ty.into(), call_expr: option_value_expr(c_ty, &pname) });
+                        arg_specs.push(ArgSpec { clj_type: ":bool".into(), call_expr: format!("(some? {pname})") });
                         call_args.push(format!("({opt_ty}){{ .ok = {cname}_value, .is_ok = {cname}_is_ok }}"));
                     }
                     Type::Enum(ep) => {
@@ -896,7 +900,7 @@ fn gen_method(
                             clj_type: ":int".into(),
                             call_expr: format!("(if {pname} ({enum_alias}/kw->int {pname}) 0)"),
                         });
-                        arg_specs.push(ArgSpec { clj_type: ":int".into(), call_expr: format!("(if (nil? {pname}) 0 1)") });
+                        arg_specs.push(ArgSpec { clj_type: ":bool".into(), call_expr: format!("(some? {pname})") });
                         call_args.push(format!("({opt_ty}){{ .ok = {cname}_value, .is_ok = {cname}_is_ok }}"));
                     }
                     other => {
@@ -1193,7 +1197,7 @@ fn gen_method(
             body_lines.push(format!("(ffi/with-alloc [out @sz-{fn_name}-result]"));
             body_lines.push(format!("  (let [s (dr/writeable-capture (fn [w__] {inner_call}))]"));
             body_lines.push("    (dr/unwrap-result!".to_string());
-            body_lines.push(format!("     (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
+            body_lines.push(format!("     (if (ffi/read out :bool @is-ok-off-{fn_name})"));
             body_lines.push("       {:ok? true :value s}".to_string());
             body_lines.push(format!("       {{:ok? false :error {err_read}}})"));
             body_lines.push(format!("    {msg_suffix}")); // closes unwrap-result!
@@ -1207,7 +1211,7 @@ fn gen_method(
             body_lines.push(format!("(ffi/with-alloc [out @sz-{fn_name}-result]"));
             body_lines.push(format!("  (c-{fn_name} {})", shim_call_exprs.join(" ")));
             body_lines.push("  (dr/unwrap-result!".to_string());
-            body_lines.push(format!("   (if (= 1 (ffi/read out :uint8 @is-ok-off-{fn_name}))"));
+            body_lines.push(format!("   (if (ffi/read out :bool @is-ok-off-{fn_name})"));
             body_lines.push(format!("     {{:ok? true :value {ok_val}}}"));
             body_lines.push(format!("     {{:ok? false :error {err_read}}})"));
             body_lines.push(msg_fn_suffix(&opaque_error, &fn_name));
@@ -1224,29 +1228,24 @@ fn gen_method(
         body_lines.push("  (ffi/with-alloc [len-out 8]".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
         body_lines.push(format!("    (let [ptr (ffi/read data-out :pointer 0) n (ffi/read len-out :size_t 0)]"));
-        body_lines.push(format!("      (ffi/read-array ptr {jolt_ty} n))))"));
-    } else if let ReturnKind::NullablePrim { jolt_ty, c_ty } = &rk {
-        // The shim stores through a `bool*`, one byte into an allocation that
-        // is not zeroed: read that byte, and normalize to a boolean as the
-        // plain bool return below does.
-        let read_val = if *c_ty == "bool" {
-            "(not= 0 (ffi/read out-val :uint8 0))".to_string()
-        } else {
-            format!("(ffi/read out-val {jolt_ty} 0)")
-        };
+        // read-array :bool reads one byte per element but hands back the
+        // bytes as numbers, so turn them into booleans here.
+        let read = format!("(ffi/read-array ptr {jolt_ty} n)");
+        let read = if *jolt_ty == ":bool" { format!("(mapv (fn [b] (not= 0 b)) {read})") } else { read };
+        body_lines.push(format!("      {read}))))"));
+    } else if let ReturnKind::NullablePrim { jolt_ty, .. } = &rk {
+        // The shim stores the flag (and a bool value) through a `bool*`, one
+        // byte into an allocation that is not zeroed; :bool reads just that
+        // byte.
         body_lines.push("(ffi/with-alloc [out-val 8]".to_string());
         body_lines.push("  (ffi/with-alloc [out-is-ok 1]".to_string());
         body_lines.push(format!("    (c-{fn_name} {})", shim_call_exprs.join(" ")));
-        body_lines.push(format!("    (when (not= 0 (ffi/read out-is-ok :uint8 0)) {read_val})))"));
+        body_lines.push(format!("    (when (ffi/read out-is-ok :bool 0) (ffi/read out-val {jolt_ty} 0))))"));
     } else if let ReturnKind::Enum { alias, .. } = &rk {
         body_lines.push(format!("({alias}/int->kw (c-{fn_name} {}))", shim_call_exprs.join(" ")));
     } else if let ReturnKind::Opaque { target } = &rk {
         let call_expr = format!("(c-{fn_name} {})", shim_call_exprs.join(" "));
         body_lines.push(emit_opaque_wrap(target, owner, &call_expr, false));
-    } else if let ReturnKind::PlainPrim { c_ty: "bool" } = &rk {
-        // 0 is truthy in Clojure/Jolt -- normalize to a real boolean
-        // (same convention as writeable-capture-when above).
-        body_lines.push(format!("(not= 0 (c-{fn_name} {}))", shim_call_exprs.join(" ")));
     } else {
         body_lines.push(format!("(c-{fn_name} {})", shim_call_exprs.join(" ")));
     }
@@ -1482,8 +1481,8 @@ mod tests {
     }
 
     // The shim stores an Option<bool> through a bool* (one byte) into an
-    // allocation that is not zeroed, so the binding must read one byte, and
-    // return a boolean like a plain bool return does.
+    // allocation that is not zeroed, so the binding must read that byte as
+    // :bool, which hands back a real boolean.
     #[test]
     fn nullable_bool_return_reads_one_byte_as_a_boolean() {
         let tcx = lower(r#"
@@ -1506,9 +1505,14 @@ mod tests {
         assert!(gen_method(&tcx, "Flag", m, &mut out, &mut shim_c, &mut extra_requires));
         assert!(shim_c.contains("bool* out_val"), "shim writes a bool: {shim_c}");
         assert!(
-            out.contains("(not= 0 (ffi/read out-val :uint8 0))"),
-            "Option<bool> must read one byte and normalize to a boolean: {out}"
+            out.contains("(ffi/read out-val :bool 0)"),
+            "Option<bool> must read its one byte as :bool: {out}"
         );
+        assert!(
+            out.contains("(when (ffi/read out-is-ok :bool 0)"),
+            "the is_ok flag is a C bool, read as :bool: {out}"
+        );
+        assert!(!out.contains("not= 0") && !out.contains(":uint8"), "no manual normalization left: {out}");
     }
 
     // Use #[jolt_diplomat::blocking] (from jolt-diplomat-macros) at the
@@ -1708,9 +1712,11 @@ mod tests {
         );
     }
 
-    // A plain bool return was unwrapped; 0 is truthy in Clojure/Jolt.
+    // A C bool is only defined in its low byte, so a bool return is
+    // declared :bool (which reads that byte and hands back a boolean), not
+    // :int wrapped in (not= 0 ...).
     #[test]
-    fn plain_bool_return_is_wrapped_not_equal_zero() {
+    fn plain_bool_return_is_declared_bool() {
         let tcx = lower(r#"
             #[diplomat::bridge]
             mod ffi {
@@ -1731,9 +1737,12 @@ mod tests {
         let generated = gen_method(&tcx, "Sink", m, &mut out, &mut shim_c, &mut extra_requires);
         assert!(generated, "plain bool-returning method must still generate a binding");
         assert!(
-            out.contains("(not= 0 (c-is-ready"),
-            "a plain bool return must be wrapped with (not= 0 ...), same convention \
-             as writeable-capture-when, got:\n{out}"
+            out.contains("[:pointer] :bool)"),
+            "a plain bool return must be declared :bool, got:\n{out}"
+        );
+        assert!(
+            out.contains("(defn is-ready [self] (c-is-ready (dr/ptr! self)))"),
+            "the :bool return is already a boolean, no wrapping, got:\n{out}"
         );
     }
 
@@ -1771,7 +1780,7 @@ mod tests {
 
     // &mut self, two &str params, bool return (set_string's shape).
     #[test]
-    fn mut_self_two_string_params_returns_wrapped_bool_with_byte_lengths() {
+    fn mut_self_two_string_params_returns_bool_with_byte_lengths() {
         let tcx = lower(r#"
             #[diplomat::bridge]
             mod ffi {
@@ -1797,9 +1806,175 @@ mod tests {
             "both string params' lengths must be UTF-8 byte counts, got:\n{out}"
         );
         assert!(
-            out.contains("(not= 0 (c-set"),
-            "the bool return must be wrapped with (not= 0 ...), got:\n{out}"
+            out.contains("] :bool)"),
+            "the bool return must be declared :bool, got:\n{out}"
         );
+        assert!(
+            !out.contains("not= 0"),
+            "a :bool return needs no (not= 0 ...) wrapping, got:\n{out}"
+        );
+        assert!(shim_c.starts_with("bool jolt_"), "the shim returns the C bool: {shim_c}");
+    }
+
+    fn gen_one(tcx: &hir::TypeContext, owner: &str, method: &str) -> (String, String) {
+        let m = find_opaque_method(tcx, owner, method);
+        let mut out = String::new();
+        let mut shim_c = String::new();
+        let mut extra_requires = std::collections::BTreeSet::new();
+        assert!(gen_method(tcx, owner, m, &mut out, &mut shim_c, &mut extra_requires),
+            "{owner}::{method} must generate a binding");
+        (out, shim_c)
+    }
+
+    #[test]
+    fn bool_param_is_passed_as_bool() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque_mut]
+                pub struct Toggle(bool);
+
+                impl Toggle {
+                    pub fn set(&mut self, on: bool) {
+                        self.0 = on;
+                    }
+                }
+            }
+        "#);
+        let (out, _) = gen_one(&tcx, "Toggle", "set");
+        assert!(out.contains("[:pointer :bool] :void)"), "a bool param is :bool, got:\n{out}");
+    }
+
+    #[test]
+    fn struct_bool_fields_are_bool_both_ways() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                pub struct Opts {
+                    pub tables: bool,
+                    pub depth: u32,
+                }
+
+                #[diplomat::opaque]
+                pub struct Doc;
+
+                impl Doc {
+                    pub fn render(&self, opts: Opts) -> u32 {
+                        opts.depth
+                    }
+                    pub fn opts(&self) -> Opts {
+                        Opts { tables: true, depth: 1 }
+                    }
+                }
+            }
+        "#);
+        let (out, shim_c) = gen_one(&tcx, "Doc", "render");
+        assert!(shim_c.contains("bool opts_tables"), "shim takes the field as a C bool: {shim_c}");
+        assert!(out.contains("[:pointer :bool :uint] :uint)"), "the bool field is passed as :bool, got:\n{out}");
+        assert!(out.contains("(:tables opts)") && !out.contains("(if (:tables opts) 1 0)"),
+            "the field value goes straight through, got:\n{out}");
+
+        let (out, _) = gen_one(&tcx, "Doc", "opts");
+        assert!(out.contains(":tables (ffi/read out :bool @off-opts-tables)"),
+            "a returned bool field is read as :bool, got:\n{out}");
+        assert!(!out.contains(":uint8"), "got:\n{out}");
+    }
+
+    #[test]
+    fn option_param_is_ok_flag_is_bool() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Knob;
+
+                impl Knob {
+                    pub fn level(&self, n: Option<u32>) -> u32 {
+                        n.unwrap_or(0)
+                    }
+                    pub fn flag(&self, b: Option<bool>) -> u32 {
+                        b.map(|b| b as u32).unwrap_or(2)
+                    }
+                }
+            }
+        "#);
+        let (out, shim_c) = gen_one(&tcx, "Knob", "level");
+        assert!(shim_c.contains("bool n_is_ok"), "{shim_c}");
+        assert!(out.contains("[:pointer :uint :bool] :uint)"), "is_ok is passed as :bool, got:\n{out}");
+        assert!(out.contains("(some? n)"), "is_ok is a boolean expression, got:\n{out}");
+
+        // (or b 0) would turn nil and false into 0, which :bool reads as true.
+        let (out, _) = gen_one(&tcx, "Knob", "flag");
+        assert!(out.contains("[:pointer :bool :bool] :uint)"), "got:\n{out}");
+        assert!(!out.contains("(or b 0)"), "an Option<bool> value must not default to 0, got:\n{out}");
+    }
+
+    #[test]
+    fn struct_option_field_keeps_its_c_type() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                pub struct Range {
+                    pub hi: DiplomatOption<f64>,
+                    pub on: DiplomatOption<bool>,
+                }
+
+                #[diplomat::opaque]
+                pub struct Meter;
+
+                impl Meter {
+                    pub fn set(&self, r: Range) {
+                    }
+                }
+            }
+        "#);
+        let (out, shim_c) = gen_one(&tcx, "Meter", "set");
+        assert!(shim_c.contains("double r_hi_ok") && shim_c.contains("bool r_on_ok"),
+            "an Option field's value keeps its own C type, not int: {shim_c}");
+        assert!(shim_c.contains("bool r_hi_is_ok") && shim_c.contains("bool r_on_is_ok"), "{shim_c}");
+        assert!(out.contains("[:pointer :double :bool :bool :bool] :void)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn fallible_is_ok_flag_is_read_as_bool() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Parser;
+
+                impl Parser {
+                    pub fn check(&self, n: u32) -> Result<(), ()> {
+                        Ok(())
+                    }
+                }
+            }
+        "#);
+        let (out, _) = gen_one(&tcx, "Parser", "check");
+        assert!(out.contains("(if (ffi/read out :bool @is-ok-off-check)"),
+            "a result's is_ok is a C bool, read as :bool, got:\n{out}");
+        assert!(!out.contains(":uint8"), "got:\n{out}");
+    }
+
+    #[test]
+    fn bool_slice_return_reads_one_byte_per_element_as_booleans() {
+        let tcx = lower(r#"
+            #[diplomat::bridge]
+            mod ffi {
+                #[diplomat::opaque]
+                pub struct Mask(Vec<bool>);
+
+                impl Mask {
+                    pub fn bits<'a>(&'a self) -> &'a [bool] {
+                        &self.0
+                    }
+                }
+            }
+        "#);
+        let (out, _) = gen_one(&tcx, "Mask", "bits");
+        assert!(out.contains("(ffi/read-array ptr :bool n)"), "one byte per element, got:\n{out}");
+        assert!(out.contains("(mapv (fn [b] (not= 0 b))"),
+            "read-array :bool hands back the raw bytes, so map them to booleans, got:\n{out}");
     }
 
     #[test]

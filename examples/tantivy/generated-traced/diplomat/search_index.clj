@@ -21,7 +21,7 @@
   (ffi/with-alloc [out @sz-new-on-disk-result]
     (c-new-on-disk path (alength (.getBytes path)) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-new-on-disk))
+     (if (ffi/read out :bool @is-ok-off-new-on-disk)
        {:ok? true :value (->SearchIndex (ffi/read out :pointer 0) (atom false))}
        {:ok? false :error (tantivy-error/->TantivyError (ffi/read out :pointer 0) (atom false))})
        "SearchIndex/new-on-disk" tantivy-error/message)
@@ -37,7 +37,7 @@
   (ffi/with-alloc [out @sz-add-product-result]
     (c-add-product (dr/ptr! self) title (alength (.getBytes title)) description (alength (.getBytes description)) category (alength (.getBytes category)) price-cents out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-add-product))
+     (if (ffi/read out :bool @is-ok-off-add-product)
        {:ok? true :value nil}
        {:ok? false :error (tantivy-error/->TantivyError (ffi/read out :pointer 0) (atom false))})
        "SearchIndex/add-product" tantivy-error/message)
@@ -53,7 +53,7 @@
   (ffi/with-alloc [out @sz-commit-result]
     (c-commit (dr/ptr! self) out)
     (dr/unwrap-result!
-     (if (= 1 (ffi/read out :uint8 @is-ok-off-commit))
+     (if (ffi/read out :bool @is-ok-off-commit)
        {:ok? true :value nil}
        {:ok? false :error (tantivy-error/->TantivyError (ffi/read out :pointer 0) (atom false))})
        "SearchIndex/commit" tantivy-error/message)
