@@ -1,0 +1,58 @@
+name: examples
+on:
+  push:
+    branches: [main]
+  pull_request:
+env:
+  # README: diplomat-tool must be 0.14-0.15 (0.16 changes the HIR)
+  DIPLOMAT_TOOL_VERSION: 0.15.0
+jobs:
+  examples:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install jolt runtime deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-1 zlib1g libtinfo6
+      - id: jolt
+        uses: jlt-commons/setup-jolt@v1.0.2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/diplomat-tool
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            backend/target
+            macros/target
+            examples/*/*_capi/target
+          key: ${{ runner.os }}-cargo-${{ env.DIPLOMAT_TOOL_VERSION }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ env.DIPLOMAT_TOOL_VERSION }}-
+      - name: Install diplomat-tool
+        run: |
+          command -v diplomat-tool >/dev/null \
+            || cargo install diplomat-tool --version "=$DIPLOMAT_TOOL_VERSION" --locked
+      - name: Macro tests
+        run: cargo test --manifest-path macros/Cargo.toml
+      # Each build.sh runs bind.clj (cargo -> diplomat-tool -> generator -> cc);
+      # bind.clj builds jolt-diplomat-backend from backend/. sdl3 opens a window
+      # and runs its own event loop, so it is left out, as in the README.
+      - name: Build and run the examples
+        run: |
+          set -euo pipefail
+          for demo in url regex semver base64 json chrono markdown callback tantivy; do
+            echo "=== $demo ==="
+            examples/$demo/build.sh
+            (cd examples/$demo/jolt-project && jolt run -m demo)
+          done
+      # The checked-in bindings must be what the generator produces now.
+      - name: Generated bindings are up to date
+        run: git diff --exit-code
